@@ -1,0 +1,6 @@
+skip:
+  # gitleaks/gitleaks-action and zizmorcore/zizmor-action are not published
+  # by verified creators.
+  - rule: github_action_from_unverified_creator_used
+    path:
+      - .github/workflows/security.yml
