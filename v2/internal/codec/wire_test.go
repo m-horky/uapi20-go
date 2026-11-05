@@ -2,6 +2,7 @@ package codec
 
 import (
 	"bytes"
+	"errors"
 	"testing"
 )
 
@@ -127,4 +128,109 @@ type ioDiscard struct{}
 
 func (ioDiscard) Write(p []byte) (int, error) {
 	return len(p), nil
+}
+
+func TestDecodeMessageAccepts(t *testing.T) {
+	tests := []struct {
+		name  string
+		frame string
+		check func(Message) bool
+	}{
+		{"call", `{"method":"org.example.Ping","parameters":{"a":1}}`, func(m Message) bool {
+			return m.Method == "org.example.Ping" && m.Parameters != nil && !m.Oneway && !m.More && !m.Upgrade
+		}},
+		{"reply", `{"parameters":{"a":1},"continues":true}`, func(m Message) bool {
+			return m.Continues && m.Method == ""
+		}},
+		{"error reply", `{"error":"org.example.Failed","parameters":{"why":"x"}}`, func(m Message) bool {
+			return m.Error == "org.example.Failed" && !m.Continues
+		}},
+		{"absent parameters", `{"method":"org.example.Ping"}`, func(m Message) bool {
+			return m.Parameters == nil
+		}},
+		{"null parameters", `{"method":"org.example.Ping","parameters":null}`, func(m Message) bool {
+			return m.Parameters == nil
+		}},
+		{"flags", `{"method":"org.example.Ping","oneway":true}`, func(m Message) bool {
+			return m.Oneway
+		}},
+		{"whitespace", " { \"method\" : \"org.example.Ping\" } ", func(m Message) bool {
+			return m.Method == "org.example.Ping"
+		}},
+		{"vendor extension", `{"method":"org.example.Ping","org.example.meta":{"trace":true}}`, func(m Message) bool {
+			ext, ok := m.Extensions["org.example.meta"]
+			return ok && string(ext) == `{"trace":true}`
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			msg, err := DecodeMessage([]byte(tt.frame))
+			if err != nil {
+				t.Fatalf("DecodeMessage() error = %v", err)
+			}
+			if !tt.check(msg) {
+				t.Fatalf("DecodeMessage() = %+v", msg)
+			}
+		})
+	}
+}
+
+func TestDecodeMessageRejects(t *testing.T) {
+	tests := []string{
+		// Invalid JSON and non-object top-level values.
+		``,
+		`{`,
+		`[1,2]`,
+		`5`,
+		`"string"`,
+		`true`,
+		// Unknown members without a reverse-domain name.
+		`{"method":"m","unknown":1}`,
+		`{"parameters":{},"x-flag":true}`,
+		// Vendor extensions that are not objects.
+		`{"method":"m","org.example":7}`,
+		`{"method":"m","org.example":[1]}`,
+		// Flags that are not booleans.
+		`{"method":"m","more":"true"}`,
+		`{"method":"m","more":1}`,
+		`{"method":"m","oneway":null}`,
+		// At most one of oneway, more and upgrade.
+		`{"method":"m","oneway":true,"more":true}`,
+		`{"method":"m","more":true,"upgrade":true}`,
+		`{"method":"m","oneway":true,"upgrade":true}`,
+		// Parameters must be an object.
+		`{"method":"m","parameters":[1]}`,
+		`{"method":"m","parameters":"x"}`,
+		`{"method":"m","parameters":7}`,
+		// Wrong member types.
+		`{"method":7}`,
+		`{"error":{"nested":true}}`,
+		// An error reply must not continue a call.
+		`{"error":"org.example.Failed","continues":true}`,
+	}
+	for _, frame := range tests {
+		t.Run(frame, func(t *testing.T) {
+			_, err := DecodeMessage([]byte(frame))
+			if !errors.Is(err, ErrMalformedMessage) {
+				t.Fatalf("DecodeMessage() error = %v, want ErrMalformedMessage", err)
+			}
+		})
+	}
+}
+
+func TestMarshalParametersOmitsEmptyObject(t *testing.T) {
+	got, err := MarshalParameters(struct{}{})
+	if err != nil {
+		t.Fatalf("MarshalParameters() error = %v", err)
+	}
+	if got != nil {
+		t.Fatalf("MarshalParameters() = %s, want omitted", *got)
+	}
+	got, err = MarshalParameters(map[string]int{})
+	if err != nil {
+		t.Fatalf("MarshalParameters() error = %v", err)
+	}
+	if got != nil {
+		t.Fatalf("MarshalParameters() = %s, want omitted", *got)
+	}
 }

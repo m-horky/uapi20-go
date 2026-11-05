@@ -3,6 +3,7 @@
 package codec
 
 import (
+	"bytes"
 	jsonv1 "encoding/json"
 	json "encoding/json/v2"
 )
@@ -35,6 +36,11 @@ func marshalParameters(v any) (*RawValue, error) {
 	b, err := marshalJSON(v)
 	if err != nil {
 		return nil, err
+	}
+	// Senders should omit the parameters member rather than transmitting
+	// null or an empty object; all three encodings are equivalent.
+	if string(bytes.TrimSpace(b)) == "{}" {
+		return nil, nil
 	}
 	raw := RawValue(b)
 	return &raw, nil

@@ -9,7 +9,8 @@ import (
 
 func BenchmarkConnClientInvoke(b *testing.B) {
 	client, done := benchmarkClientServer(b, func(builder *ServerBuilder) {
-		_ = builder.RegisterUnary("org.example.bench", "Ping", func(ctx context.Context, call UnaryCall) error {
+		iface := benchInterface(b, builder, "Ping", "Watch")
+		_ = iface.Unary("Ping", func(ctx context.Context, call UnaryCall) error {
 			var in struct {
 				Value string `json:"value"`
 			}
@@ -42,7 +43,8 @@ func BenchmarkConnClientInvoke(b *testing.B) {
 
 func BenchmarkConnClientStream(b *testing.B) {
 	client, done := benchmarkClientServer(b, func(builder *ServerBuilder) {
-		_ = builder.RegisterStream("org.example.bench", "Watch", func(ctx context.Context, call StreamCall) error {
+		iface := benchInterface(b, builder, "Ping", "Watch")
+		_ = iface.Stream("Watch", func(ctx context.Context, call StreamCall) error {
 			if err := call.Send(ctx, struct {
 				Value string `json:"value"`
 			}{Value: "one"}); err != nil {
@@ -60,10 +62,14 @@ func BenchmarkConnClientStream(b *testing.B) {
 	})
 	defer benchmarkClose(b, client, done)
 
+	in := struct {
+		Value string `json:"value"`
+	}{Value: "payload"}
+
 	b.ReportAllocs()
 	b.ResetTimer()
 	for b.Loop() {
-		stream, err := client.Stream(context.Background(), "org.example.bench.Watch", nil)
+		stream, err := client.Stream(context.Background(), "org.example.bench.Watch", in)
 		if err != nil {
 			b.Fatalf("Stream() error = %v", err)
 		}
@@ -83,7 +89,8 @@ func BenchmarkConnClientStream(b *testing.B) {
 
 func BenchmarkConnClientBatchInvoke(b *testing.B) {
 	client, done := benchmarkClientServer(b, func(builder *ServerBuilder) {
-		_ = builder.RegisterUnary("org.example.bench", "Ping", func(ctx context.Context, call UnaryCall) error {
+		iface := benchInterface(b, builder, "Ping", "Watch")
+		_ = iface.Unary("Ping", func(ctx context.Context, call UnaryCall) error {
 			var in struct {
 				Value string `json:"value"`
 			}
@@ -118,6 +125,19 @@ func BenchmarkConnClientBatchInvoke(b *testing.B) {
 			b.Fatalf("Batch.Send() error = %v", err)
 		}
 	}
+}
+
+func benchInterface(b *testing.B, builder *ServerBuilder, methods ...string) *Interface {
+	b.Helper()
+	description := "interface org.example.bench\n"
+	for _, method := range methods {
+		description += "\nmethod " + method + "(value: string) -> (value: string)\n"
+	}
+	iface, err := builder.Interface(description)
+	if err != nil {
+		b.Fatalf("Interface() error = %v", err)
+	}
+	return iface
 }
 
 func benchmarkClientServer(b *testing.B, register func(*ServerBuilder)) (*ConnClient, <-chan error) {

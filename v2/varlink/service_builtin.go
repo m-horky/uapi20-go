@@ -1,11 +1,9 @@
 package varlink
 
-const (
-	serviceInterfaceName = "org.varlink.service"
-)
-
-const serviceInterfaceDescription = `# The Varlink Service Interface is provided by every varlink service. It
-# describes the service and the interfaces it implements.
+// ServiceInterfaceDescription is the interface description of the builtin
+// org.varlink.service interface, as defined by the varlink specification.
+const ServiceInterfaceDescription = `# The Varlink Service Interface should be provided by every varlink service.
+# It describes the service and the interfaces it implements.
 interface org.varlink.service
 
 # Get a list of all the interfaces a service provides and information
@@ -33,4 +31,13 @@ error MethodNotImplemented (method: string)
 
 # One of the passed parameters is invalid.
 error InvalidParameter (parameter: string)
+
+# Client is denied access
+error PermissionDenied ()
+
+# Method is expected to be called with 'more' set to true, but wasn't
+error ExpectedMore ()
+
+# Method is expected to be called with 'upgrade' set to true, but wasn't
+error ExpectedUpgrade ()
 `

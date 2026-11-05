@@ -13,11 +13,11 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        go-version: ['1.21.x', 'stable']
+        go-version: ["1.26", "1.27"]
         os: [macos-latest, windows-latest, ubuntu-latest]
     steps:
     - name: Set up Go ${{ matrix.go-version }}
-      uses: actions/setup-go@v5
+      uses: actions/setup-go@v7
       with:
         go-version: ${{ matrix.go-version }}
       id: go
@@ -26,10 +26,37 @@ jobs:
       uses: actions/checkout@v5
 
     - name: Generate
-      run: go generate cmd/varlink-go-certification/orgvarlinkcertification/generate.go
+      run: go generate ./cmd/...
+
+    - name: Vet
+      run: go vet ./...
 
     - name: Build
       run: go build -v ./...
 
     - name: Test
+      run: go test -v ./...
+
+    - name: Vet (v2)
+      working-directory: v2
+      run: go vet ./...
+
+    - name: Build (v2)
+      working-directory: v2
+      run: go build -v ./...
+
+    - name: Test (v2)
+      working-directory: v2
+      run: go test -v ./...
+
+    - name: Test (v2, race)
+      if: runner.os == 'Linux' && matrix.go-version == '1.27'
+      working-directory: v2
+      run: go test -race -v ./...
+
+    - name: Test (v2, json/v2 backend)
+      if: runner.os == 'Linux'
+      working-directory: v2
+      env:
+        GOEXPERIMENT: jsonv2
       run: go test -v ./...

@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
 	"sync"
+	"time"
 
 	"github.com/varlink/go/v2/internal/codec"
 )
@@ -29,76 +31,118 @@ func NewClient(conn io.ReadWriteCloser, cfg ClientConfig) *ConnClient {
 	}
 	return &ConnClient{
 		cfg:       cfg,
-		transport: newFramedTransport(conn, cfg.MaxFrameSize),
+		transport: newFramedTransport(conn, cfg.MaxFrameSize, cfg.AcceptFileDescriptors),
 	}
 }
 
+// Invoke calls method and waits for its single reply.
 func (c *ConnClient) Invoke(ctx context.Context, method string, in any, out any) error {
+	_, err := c.invoke(ctx, method, in, out, nil)
+	return err
+}
+
+// InvokeFDs calls method, sending files with the call and returning the
+// files received with the reply.
+func (c *ConnClient) InvokeFDs(ctx context.Context, method string, in any, out any, files []*os.File) ([]*os.File, error) {
+	return c.invoke(ctx, method, in, out, files)
+}
+
+func (c *ConnClient) invoke(ctx context.Context, method string, in any, out any, files []*os.File) ([]*os.File, error) {
 	c.opMu.Lock()
 	defer c.opMu.Unlock()
 
-	if err := c.ensureUsable(); err != nil {
-		return err
+	transport, err := c.ensureUsable()
+	if err != nil {
+		return nil, err
 	}
-	if err := c.sendRequest(ctx, method, in, false, false, false); err != nil {
-		return err
+	if err := sendRequest(ctx, transport, c.cfg.WriteTimeout, method, in, false, false, false, files); err != nil {
+		return nil, c.fail(err)
 	}
 
-	msg, err := c.readReply(ctx, method)
+	msg, replyFDs, err := readReplyFDs(ctx, transport, c.cfg.ReadTimeout, method)
 	if err != nil {
-		return err
+		closeFiles(replyFDs)
+		if isRemoteError(err) {
+			return nil, err
+		}
+		return nil, c.fail(err)
 	}
 	if msg.Continues {
-		return c.fail(&ReplyError{Method: method, Err: ErrUnexpectedReply})
+		closeFiles(replyFDs)
+		return nil, c.fail(&ReplyError{Method: method, Err: ErrUnexpectedReply})
 	}
 	if msg.Parameters != nil {
 		if err := codec.DecodeParameters(msg.Parameters, out); err != nil {
-			return &ReplyError{Method: method, Err: err}
+			closeFiles(replyFDs)
+			return nil, &ReplyError{Method: method, Err: err}
 		}
+	}
+	return replyFDs, nil
+}
+
+// Oneway calls method without waiting for (or allowing) a reply.
+func (c *ConnClient) Oneway(ctx context.Context, method string, in any) error {
+	return c.OnewayFDs(ctx, method, in, nil)
+}
+
+// OnewayFDs calls method without waiting for a reply, sending files with
+// the call.
+func (c *ConnClient) OnewayFDs(ctx context.Context, method string, in any, files []*os.File) error {
+	c.opMu.Lock()
+	defer c.opMu.Unlock()
+
+	transport, err := c.ensureUsable()
+	if err != nil {
+		return err
+	}
+	if err := sendRequest(ctx, transport, c.cfg.WriteTimeout, method, in, false, true, false, files); err != nil {
+		return c.fail(err)
 	}
 	return nil
 }
 
-func (c *ConnClient) Oneway(ctx context.Context, method string, in any) error {
-	c.opMu.Lock()
-	defer c.opMu.Unlock()
-
-	if err := c.ensureUsable(); err != nil {
-		return err
-	}
-	return c.sendRequest(ctx, method, in, false, true, false)
-}
-
+// Stream calls method with the more flag set and returns a receiver for its
+// replies.
 func (c *ConnClient) Stream(ctx context.Context, method string, in any) (Stream, error) {
 	c.opMu.Lock()
-	if err := c.ensureUsable(); err != nil {
+	transport, err := c.ensureUsable()
+	if err != nil {
 		c.opMu.Unlock()
 		return nil, err
 	}
-	if err := c.sendRequest(ctx, method, in, true, false, false); err != nil {
+	if err := sendRequest(ctx, transport, c.cfg.WriteTimeout, method, in, true, false, false, nil); err != nil {
 		c.opMu.Unlock()
-		return nil, err
+		return nil, c.fail(err)
 	}
 	return &clientStream{
-		client: c,
-		method: method,
+		client:    c,
+		transport: transport,
+		method:    method,
 	}, nil
 }
 
+// Upgrade calls method with the upgrade flag set. On success the connection,
+// including any bytes already received after the confirming reply, is
+// returned for use by the upgraded protocol.
 func (c *ConnClient) Upgrade(ctx context.Context, method string, in any, out any) (UpgradedConn, error) {
 	c.opMu.Lock()
 	defer c.opMu.Unlock()
 
-	if err := c.ensureUsable(); err != nil {
-		return nil, err
-	}
-	if err := c.sendRequest(ctx, method, in, false, false, true); err != nil {
-		return nil, err
-	}
-
-	msg, err := c.readReply(ctx, method)
+	transport, err := c.ensureUsable()
 	if err != nil {
 		return nil, err
+	}
+	if err := sendRequest(ctx, transport, c.cfg.WriteTimeout, method, in, false, false, true, nil); err != nil {
+		return nil, c.fail(err)
+	}
+
+	msg, replyFDs, err := readReplyFDs(ctx, transport, c.cfg.ReadTimeout, method)
+	closeFiles(replyFDs)
+	if err != nil {
+		if isRemoteError(err) {
+			return nil, err
+		}
+		return nil, c.fail(err)
 	}
 	if msg.Continues {
 		return nil, c.fail(&ReplyError{Method: method, Err: ErrUnexpectedReply})
@@ -116,10 +160,20 @@ func (c *ConnClient) Upgrade(ctx context.Context, method string, in any, out any
 	return conn, nil
 }
 
+// SupportsFileDescriptors reports whether the connection can pass file
+// descriptors.
+func (c *ConnClient) SupportsFileDescriptors() bool {
+	c.stateMu.Lock()
+	defer c.stateMu.Unlock()
+	return c.transport != nil && c.transport.fd != nil
+}
+
+// Batch returns a batch for pipelined unary and oneway calls.
 func (c *ConnClient) Batch() Batch {
 	return &clientBatch{client: c}
 }
 
+// Close closes the underlying connection. In-flight calls fail.
 func (c *ConnClient) Close() error {
 	c.stateMu.Lock()
 	defer c.stateMu.Unlock()
@@ -135,13 +189,15 @@ func (c *ConnClient) Close() error {
 	return err
 }
 
-func (c *ConnClient) ensureUsable() error {
+// ensureUsable returns the transport to use for a new operation. The
+// snapshot stays valid for the operation even if Close runs concurrently.
+func (c *ConnClient) ensureUsable() (*framedTransport, error) {
 	c.stateMu.Lock()
 	defer c.stateMu.Unlock()
 	if c.closed || c.transport == nil || c.transport.conn == nil {
-		return io.ErrClosedPipe
+		return nil, io.ErrClosedPipe
 	}
-	return nil
+	return c.transport, nil
 }
 
 func (c *ConnClient) detach() io.ReadWriteCloser {
@@ -156,7 +212,14 @@ func (c *ConnClient) detach() io.ReadWriteCloser {
 	return conn
 }
 
-func (c *ConnClient) sendRequest(ctx context.Context, method string, in any, more, oneway, upgrade bool) error {
+func (c *ConnClient) fail(err error) error {
+	_ = c.Close()
+	return err
+}
+
+// sendRequest writes one call message, attaching files to it when the
+// transport supports file descriptor passing.
+func sendRequest(ctx context.Context, transport *framedTransport, timeout time.Duration, method string, in any, more, oneway, upgrade bool, files []*os.File) error {
 	if method == "" {
 		return ErrInvalidMethod
 	}
@@ -164,78 +227,138 @@ func (c *ConnClient) sendRequest(ctx context.Context, method string, in any, mor
 	if err != nil {
 		return err
 	}
-	if err := c.transport.writeMessage(ctx, c.cfg.WriteTimeout, Message{
+	return transport.writeMessageFDs(ctx, timeout, Message{
 		Method:     method,
 		Parameters: params,
 		More:       more,
 		Oneway:     oneway,
 		Upgrade:    upgrade,
-	}); err != nil {
-		return c.fail(err)
-	}
-	return nil
+	}, files)
 }
 
-func (c *ConnClient) readReply(ctx context.Context, method string) (Message, error) {
-	msg, err := c.transport.readMessage(ctx, c.cfg.ReadTimeout)
+func isRemoteError(err error) bool {
+	var remote *RemoteError
+	return errors.As(err, &remote)
+}
+
+// readReplyFDs reads and validates one reply to a call on method, returning
+// the file descriptors received with it.
+func readReplyFDs(ctx context.Context, transport *framedTransport, timeout time.Duration, method string) (Message, []*os.File, error) {
+	msg, files, err := transport.readMessageFDs(ctx, timeout)
 	if err != nil {
 		if errors.Is(err, io.EOF) {
 			err = io.ErrUnexpectedEOF
 		}
-		return Message{}, c.fail(err)
+		return Message{}, nil, err
 	}
 	if msg.Method != "" || msg.More || msg.Oneway || msg.Upgrade {
-		return Message{}, c.fail(&ReplyError{Method: method, Err: ErrProtocolViolation})
+		closeFiles(files)
+		return Message{}, nil, &ReplyError{Method: method, Err: ErrProtocolViolation}
 	}
 	if remote := remoteErrorFromMessage(msg); remote != nil {
-		return Message{}, remote
+		return Message{}, files, remote
 	}
-	return msg, nil
+	return msg, files, nil
 }
 
-func (c *ConnClient) fail(err error) error {
-	_ = c.Close()
-	return err
+// readReply reads and validates one reply, discarding any file descriptors
+// received with it.
+func readReply(ctx context.Context, transport *framedTransport, timeout time.Duration, method string) (Message, error) {
+	msg, files, err := readReplyFDs(ctx, transport, timeout, method)
+	closeFiles(files)
+	return msg, err
+}
+
+// GetInfo calls org.varlink.service.GetInfo and returns the service
+// metadata and the names of the interfaces it implements.
+func (c *ConnClient) GetInfo(ctx context.Context) (ServiceInfo, []string, error) {
+	var out struct {
+		Vendor     string   `json:"vendor"`
+		Product    string   `json:"product"`
+		Version    string   `json:"version"`
+		URL        string   `json:"url"`
+		Interfaces []string `json:"interfaces"`
+	}
+	if err := c.Invoke(ctx, "org.varlink.service.GetInfo", nil, &out); err != nil {
+		return ServiceInfo{}, nil, err
+	}
+	return ServiceInfo{
+		Vendor:  out.Vendor,
+		Product: out.Product,
+		Version: out.Version,
+		URL:     out.URL,
+	}, out.Interfaces, nil
+}
+
+// GetInterfaceDescription calls org.varlink.service.GetInterfaceDescription
+// for iface and returns the interface description source.
+func (c *ConnClient) GetInterfaceDescription(ctx context.Context, iface string) (string, error) {
+	var out struct {
+		Description string `json:"description"`
+	}
+	in := struct {
+		Interface string `json:"interface"`
+	}{Interface: iface}
+	if err := c.Invoke(ctx, "org.varlink.service.GetInterfaceDescription", &in, &out); err != nil {
+		return "", err
+	}
+	return out.Description, nil
 }
 
 type clientStream struct {
-	client *ConnClient
-	method string
-	done   bool
-	closed bool
+	client    *ConnClient
+	transport *framedTransport
+	method    string
+	done      bool
+	closed    bool
 }
 
 func (s *clientStream) Recv(ctx context.Context, out any) error {
+	_, err := s.recv(ctx, out)
+	return err
+}
+
+// RecvFDs receives one reply and returns the file descriptors it carries.
+func (s *clientStream) RecvFDs(ctx context.Context, out any) ([]*os.File, error) {
+	return s.recv(ctx, out)
+}
+
+func (s *clientStream) recv(ctx context.Context, out any) ([]*os.File, error) {
 	if s.closed {
-		return ErrStreamClosed
+		return nil, ErrStreamClosed
 	}
 	if s.done {
-		return io.EOF
+		return nil, io.EOF
 	}
 
-	msg, err := s.client.readReply(ctx, s.method)
+	msg, files, err := readReplyFDs(ctx, s.transport, s.client.cfg.ReadTimeout, s.method)
 	if err != nil {
+		closeFiles(files)
+		client := s.client
 		s.done = true
 		s.release()
-		return err
+		if isRemoteError(err) || client == nil {
+			return nil, err
+		}
+		return nil, client.fail(err)
 	}
 	if msg.Parameters != nil {
 		if err := codec.DecodeParameters(msg.Parameters, out); err != nil {
+			closeFiles(files)
 			client := s.client
 			s.done = true
 			s.release()
-			err := &ReplyError{Method: s.method, Err: err}
-			if client != nil {
-				return client.fail(err)
+			if client == nil {
+				return nil, &ReplyError{Method: s.method, Err: err}
 			}
-			return err
+			return nil, client.fail(&ReplyError{Method: s.method, Err: err})
 		}
 	}
 	if !msg.Continues {
 		s.done = true
 		s.release()
 	}
-	return nil
+	return files, nil
 }
 
 func (s *clientStream) Close() error {
@@ -252,6 +375,7 @@ func (s *clientStream) Close() error {
 	return client.Close()
 }
 
+// release returns the client operation lock to the client.
 func (s *clientStream) release() {
 	if s.client != nil {
 		s.client.opMu.Unlock()
@@ -310,7 +434,8 @@ func (b *clientBatch) Send(ctx context.Context) error {
 	b.client.opMu.Lock()
 	defer b.client.opMu.Unlock()
 
-	if err := b.client.ensureUsable(); err != nil {
+	transport, err := b.client.ensureUsable()
+	if err != nil {
 		return err
 	}
 	requests, err := b.prepareRequests()
@@ -321,8 +446,8 @@ func (b *clientBatch) Send(ctx context.Context) error {
 	writeErr := make(chan error, 1)
 	go func() {
 		for _, request := range requests {
-			if err := b.client.transport.writeMessage(ctx, b.client.cfg.WriteTimeout, request.msg); err != nil {
-				writeErr <- b.client.fail(err)
+			if err := transport.writeMessage(ctx, b.client.cfg.WriteTimeout, request.msg); err != nil {
+				writeErr <- err
 				return
 			}
 		}
@@ -337,13 +462,14 @@ func (b *clientBatch) Send(ctx context.Context) error {
 			select {
 			case err := <-writeErr:
 				if err != nil {
-					return err
+					return b.client.fail(err)
 				}
 				writeDone = true
 			default:
 			}
 		}
-		msg, err := b.client.readReply(ctx, request.method)
+		msg, files, err := readReplyFDs(ctx, transport, b.client.cfg.ReadTimeout, request.method)
+		closeFiles(files)
 		if err != nil {
 			return b.client.fail(err)
 		}
@@ -358,7 +484,7 @@ func (b *clientBatch) Send(ctx context.Context) error {
 	}
 	if !writeDone {
 		if err := <-writeErr; err != nil {
-			return err
+			return b.client.fail(err)
 		}
 	}
 	return nil

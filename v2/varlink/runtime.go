@@ -5,25 +5,11 @@ import (
 	"errors"
 	"io"
 	"net"
+	"os"
 	"sync"
 	"time"
 
 	"github.com/varlink/go/v2/internal/codec"
-)
-
-const (
-	serviceInterfaceNotFound    = "org.varlink.service.InterfaceNotFound"
-	serviceMethodNotFound       = "org.varlink.service.MethodNotFound"
-	serviceMethodNotImplemented = "org.varlink.service.MethodNotImplemented"
-	serviceInvalidParameter     = "org.varlink.service.InvalidParameter"
-	serviceInternalError        = "org.varlink.service.InternalError"
-)
-
-var (
-	// ErrProtocolViolation is returned when a peer sends a structurally invalid varlink message.
-	ErrProtocolViolation = errors.New("varlink: protocol violation")
-	// ErrUnexpectedReply is returned when the peer sends a reply shape that does not match the request.
-	ErrUnexpectedReply = errors.New("varlink: unexpected reply")
 )
 
 // RemoteError is a remote varlink error reply.
@@ -56,45 +42,110 @@ type deadlineWriter interface {
 }
 
 type framedTransport struct {
-	conn io.ReadWriteCloser
-	wire *codec.Wire
+	conn         io.ReadWriteCloser
+	wire         *codec.Wire
+	fd           *fdConn
+	maxFrameSize int
 }
 
-func newFramedTransport(conn io.ReadWriteCloser, maxFrameSize int) *framedTransport {
+func newFramedTransport(conn io.ReadWriteCloser, maxFrameSize int, acceptFDs bool) *framedTransport {
+	// AF_UNIX stream connections are wrapped so that they can send and,
+	// when acceptFDs is set, receive file descriptors in SCM_RIGHTS
+	// ancillary messages. Other transports degrade gracefully: the fd
+	// field stays nil and fd-capable operations fail with
+	// ErrFileDescriptorsUnsupported.
+	fd := wrapFDConn(conn, acceptFDs)
+	if fd != nil {
+		conn = fd
+	}
+	if maxFrameSize <= 0 {
+		maxFrameSize = MaxFrameSizeDefault
+	}
 	return &framedTransport{
-		conn: conn,
-		wire: codec.NewWire(conn, conn, codec.DefaultReaderBufferSize, maxFrameSize),
+		conn:         conn,
+		wire:         codec.NewWire(conn, conn, codec.DefaultReaderBufferSize, maxFrameSize),
+		fd:           fd,
+		maxFrameSize: maxFrameSize,
 	}
 }
 
 func (t *framedTransport) readMessage(ctx context.Context, timeout time.Duration) (Message, error) {
+	msg, files, err := t.readMessageFDs(ctx, timeout)
+	// Callers of the plain path do not expect file descriptors; any
+	// received with the message are not accepted.
+	closeFiles(files)
+	return msg, err
+}
+
+// readMessageFDs reads one message and returns the file descriptors
+// received with it.
+func (t *framedTransport) readMessageFDs(ctx context.Context, timeout time.Duration) (Message, []*os.File, error) {
 	stopDeadline, err := setReadDeadline(t.conn, ctx, timeout)
 	if err != nil {
-		return Message{}, err
+		return Message{}, nil, err
 	}
 	defer stopDeadline()
 
 	msg, err := t.wire.ReadMessage()
-	if err != nil {
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return Message{}, ctxErr
-		}
-		if codec.IsDecodeError(err) {
-			return Message{}, &ReplyError{Err: err}
-		}
-		return Message{}, err
+	var files []*os.File
+	if t.fd != nil {
+		files = t.fd.takeMessageFDs()
 	}
-	return Message(msg), nil
+	if err != nil {
+		closeFiles(files)
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return Message{}, nil, ctxErr
+		}
+		var malformed *malformedControlMessage
+		if errors.As(err, &malformed) || errors.Is(err, codec.ErrMalformedMessage) {
+			return Message{}, nil, &ReplyError{Err: err}
+		}
+		return Message{}, nil, err
+	}
+	return msg, files, nil
 }
 
 func (t *framedTransport) writeMessage(ctx context.Context, timeout time.Duration, msg Message) error {
+	return t.writeMessageFDs(ctx, timeout, msg, nil)
+}
+
+// writeMessageFDs writes one message, attaching files to it in an
+// SCM_RIGHTS ancillary message on transports that support it.
+func (t *framedTransport) writeMessageFDs(ctx context.Context, timeout time.Duration, msg Message, files []*os.File) error {
+	if len(files) == 0 {
+		stopDeadline, err := setWriteDeadline(t.conn, ctx, timeout)
+		if err != nil {
+			return err
+		}
+		defer stopDeadline()
+
+		if err := t.wire.WriteMessage(codec.Message(msg)); err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return ctxErr
+			}
+			return err
+		}
+		return nil
+	}
+	if t.fd == nil {
+		return ErrFileDescriptorsUnsupported
+	}
 	stopDeadline, err := setWriteDeadline(t.conn, ctx, timeout)
 	if err != nil {
 		return err
 	}
 	defer stopDeadline()
 
-	if err := t.wire.WriteMessage(codec.Message(msg)); err != nil {
+	frame, err := codec.MarshalMessage(codec.Message(msg))
+	if err != nil {
+		return err
+	}
+	if len(frame)+1 > t.maxFrameSize {
+		return codec.ErrFrameTooLarge
+	}
+	// The descriptors must be attached to the first byte of the message,
+	// so the frame and its delimiter are sent in a single sendmsg call.
+	if err := t.fd.writeFrame(frame, files); err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return ctxErr
 		}
@@ -104,6 +155,9 @@ func (t *framedTransport) writeMessage(ctx context.Context, timeout time.Duratio
 }
 
 func (t *framedTransport) detach() io.ReadWriteCloser {
+	if t.fd != nil {
+		t.fd.detachFD()
+	}
 	if t.wire.Buffered() == 0 {
 		return t.conn
 	}

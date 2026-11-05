@@ -35,6 +35,87 @@ type certificationPair struct {
 	Second string `json:"second"`
 }
 
+// certificationInterfaceDescription is the interface description of the
+// varlink certification service.
+const certificationInterfaceDescription = `interface org.varlink.certification
+
+type Interface (
+  foo: ?[]?[string](foo, bar, baz),
+  anon: (foo: bool, bar: bool)
+)
+
+type MyType (
+  object: object,
+  enum: (one, two, three),
+  struct: (first: int, second: string),
+  array: []string,
+  dictionary: [string]string,
+  stringset: [string](),
+  nullable: ?string,
+  nullable_array_struct: ?[](first: int, second: string),
+  interface: Interface
+)
+
+method Start() -> (client_id: string)
+
+method Test01(client_id: string) -> (bool: bool)
+
+method Test02(client_id: string, bool: bool) -> (int: int)
+
+method Test03(client_id: string, int: int) -> (float: float)
+
+method Test04(client_id: string, float: float) -> (string: string)
+
+method Test05(client_id: string, string: string) -> (
+  bool: bool,
+  int: int,
+  float: float,
+  string: string
+)
+
+method Test06(
+  client_id: string,
+  bool: bool,
+  int: int,
+  float: float,
+  string: string
+) -> (
+  struct: (
+    bool: bool,
+    int: int,
+    float: float,
+    string: string
+  )
+)
+
+method Test07(
+  client_id: string,
+  struct: (
+    bool: bool,
+    int: int,
+    float: float,
+    string: string
+  )
+) -> (map: [string]string)
+
+method Test08(client_id: string, map: [string]string) -> (set: [string]())
+
+method Test09(client_id: string, set: [string]()) -> (mytype: MyType)
+
+method Test10(client_id: string, mytype: MyType) -> (string: string)
+
+method Test11(
+  client_id: string,
+  last_more_replies: []string
+) -> ()
+
+method End(client_id: string) -> (all_ok: bool)
+
+error ClientIdError ()
+
+error CertificationError (wants: object, got: object)
+`
+
 type certificationState struct {
 	clientID string
 }
@@ -43,19 +124,23 @@ func TestConnClientCertificationScenario(t *testing.T) {
 	state := &certificationState{clientID: "client-1"}
 
 	client, done := newTestClientServer(t, func(b *ServerBuilder) {
+		iface, err := b.Interface(certificationInterfaceDescription)
+		if err != nil {
+			t.Fatalf("Interface() error = %v", err)
+		}
 		mustRegister := func(err error) {
 			if err != nil {
 				t.Fatalf("register certification handler: %v", err)
 			}
 		}
 
-		mustRegister(b.RegisterUnary("org.varlink.certification", "Start", func(ctx context.Context, call UnaryCall) error {
+		mustRegister(iface.Unary("Start", func(ctx context.Context, call UnaryCall) error {
 			return call.Reply(ctx, struct {
 				ClientID string `json:"client_id"`
 			}{ClientID: state.clientID})
 		}))
 
-		mustRegister(b.RegisterUnary("org.varlink.certification", "Test01", func(ctx context.Context, call UnaryCall) error {
+		mustRegister(iface.Unary("Test01", func(ctx context.Context, call UnaryCall) error {
 			var in struct {
 				ClientID string `json:"client_id"`
 			}
@@ -70,7 +155,7 @@ func TestConnClientCertificationScenario(t *testing.T) {
 			}{Bool: true})
 		}))
 
-		mustRegister(b.RegisterUnary("org.varlink.certification", "Test02", func(ctx context.Context, call UnaryCall) error {
+		mustRegister(iface.Unary("Test02", func(ctx context.Context, call UnaryCall) error {
 			var in struct {
 				ClientID string `json:"client_id"`
 				Bool     bool   `json:"bool"`
@@ -92,7 +177,7 @@ func TestConnClientCertificationScenario(t *testing.T) {
 			}{Int: 1})
 		}))
 
-		mustRegister(b.RegisterUnary("org.varlink.certification", "Test03", func(ctx context.Context, call UnaryCall) error {
+		mustRegister(iface.Unary("Test03", func(ctx context.Context, call UnaryCall) error {
 			var in struct {
 				ClientID string `json:"client_id"`
 				Int      int64  `json:"int"`
@@ -111,7 +196,7 @@ func TestConnClientCertificationScenario(t *testing.T) {
 			}{Float: 1})
 		}))
 
-		mustRegister(b.RegisterUnary("org.varlink.certification", "Test04", func(ctx context.Context, call UnaryCall) error {
+		mustRegister(iface.Unary("Test04", func(ctx context.Context, call UnaryCall) error {
 			var in struct {
 				ClientID string  `json:"client_id"`
 				Float    float64 `json:"float"`
@@ -130,7 +215,7 @@ func TestConnClientCertificationScenario(t *testing.T) {
 			}{String: "ping"})
 		}))
 
-		mustRegister(b.RegisterUnary("org.varlink.certification", "Test05", func(ctx context.Context, call UnaryCall) error {
+		mustRegister(iface.Unary("Test05", func(ctx context.Context, call UnaryCall) error {
 			var in struct {
 				ClientID string `json:"client_id"`
 				String   string `json:"string"`
@@ -157,7 +242,7 @@ func TestConnClientCertificationScenario(t *testing.T) {
 			})
 		}))
 
-		mustRegister(b.RegisterUnary("org.varlink.certification", "Test06", func(ctx context.Context, call UnaryCall) error {
+		mustRegister(iface.Unary("Test06", func(ctx context.Context, call UnaryCall) error {
 			var in struct {
 				ClientID string  `json:"client_id"`
 				Bool     bool    `json:"bool"`
@@ -196,7 +281,7 @@ func TestConnClientCertificationScenario(t *testing.T) {
 			})
 		}))
 
-		mustRegister(b.RegisterUnary("org.varlink.certification", "Test07", func(ctx context.Context, call UnaryCall) error {
+		mustRegister(iface.Unary("Test07", func(ctx context.Context, call UnaryCall) error {
 			var in struct {
 				ClientID string `json:"client_id"`
 				Struct   struct {
@@ -220,7 +305,7 @@ func TestConnClientCertificationScenario(t *testing.T) {
 			}{Map: map[string]string{"foo": "Foo", "bar": "Bar"}})
 		}))
 
-		mustRegister(b.RegisterUnary("org.varlink.certification", "Test08", func(ctx context.Context, call UnaryCall) error {
+		mustRegister(iface.Unary("Test08", func(ctx context.Context, call UnaryCall) error {
 			var in struct {
 				ClientID string            `json:"client_id"`
 				Map      map[string]string `json:"map"`
@@ -239,7 +324,7 @@ func TestConnClientCertificationScenario(t *testing.T) {
 			}{Set: map[string]struct{}{"one": {}, "two": {}, "three": {}}})
 		}))
 
-		mustRegister(b.RegisterUnary("org.varlink.certification", "Test09", func(ctx context.Context, call UnaryCall) error {
+		mustRegister(iface.Unary("Test09", func(ctx context.Context, call UnaryCall) error {
 			var in struct {
 				ClientID string              `json:"client_id"`
 				Set      map[string]struct{} `json:"set"`
@@ -281,7 +366,7 @@ func TestConnClientCertificationScenario(t *testing.T) {
 			})
 		}))
 
-		mustRegister(b.RegisterStream("org.varlink.certification", "Test10", func(ctx context.Context, call StreamCall) error {
+		mustRegister(iface.Stream("Test10", func(ctx context.Context, call StreamCall) error {
 			var in struct {
 				ClientID string              `json:"client_id"`
 				MyType   certificationMyType `json:"mytype"`
@@ -307,7 +392,7 @@ func TestConnClientCertificationScenario(t *testing.T) {
 			}{String: "Reply number 10"})
 		}))
 
-		mustRegister(b.RegisterUnary("org.varlink.certification", "Test11", func(ctx context.Context, call UnaryCall) error {
+		mustRegister(iface.Unary("Test11", func(ctx context.Context, call UnaryCall) error {
 			var in struct {
 				ClientID        string   `json:"client_id"`
 				LastMoreReplies []string `json:"last_more_replies"`
@@ -336,7 +421,7 @@ func TestConnClientCertificationScenario(t *testing.T) {
 			return nil
 		}))
 
-		mustRegister(b.RegisterUnary("org.varlink.certification", "End", func(ctx context.Context, call UnaryCall) error {
+		mustRegister(iface.Unary("End", func(ctx context.Context, call UnaryCall) error {
 			var in struct {
 				ClientID string `json:"client_id"`
 			}
