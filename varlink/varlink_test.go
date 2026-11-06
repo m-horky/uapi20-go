@@ -36,7 +36,7 @@ func TestService(t *testing.T) {
 		"Varlink",
 		"Varlink Test",
 		"1",
-		"https://github.com/varlink/go/varlink",
+		"https://github.com/m-horky/uapi20-go/varlink",
 	)
 
 	t.Run("ZeroMessage", func(t *testing.T) {
@@ -165,7 +165,7 @@ func TestService(t *testing.T) {
 		if err := service.HandleMessage(context.Background(), wf, msg); err != nil {
 			t.Fatalf("HandleMessage returned error: %v", err)
 		}
-		expect(t, `{"parameters":{"vendor":"Varlink","product":"Varlink Test","version":"1","url":"https://github.com/varlink/go/varlink","interfaces":["org.varlink.service"]}}`+"\000",
+		expect(t, `{"parameters":{"vendor":"Varlink","product":"Varlink Test","version":"1","url":"https://github.com/m-horky/uapi20-go/varlink","interfaces":["org.varlink.service"]}}`+"\000",
 			string(written))
 	})
 }
@@ -230,7 +230,7 @@ func TestMoreService(t *testing.T) {
 		"Varlink",
 		"Varlink Test",
 		"1",
-		"https://github.com/varlink/go/varlink",
+		"https://github.com/m-horky/uapi20-go/varlink",
 	)
 
 	if err := service.RegisterInterface(newTestInterface); err != nil {

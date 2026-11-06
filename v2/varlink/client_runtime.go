@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/varlink/go/v2/internal/codec"
+	"github.com/m-horky/uapi20-go/v2/internal/codec"
 )
 
 // ConnClient is a framed varlink client over an existing transport connection.

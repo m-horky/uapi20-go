@@ -22,7 +22,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/varlink/go/v2/varlink"
+	"github.com/m-horky/uapi20-go/v2/varlink"
 )
 
 func main() {

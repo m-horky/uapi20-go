@@ -15,8 +15,8 @@ import (
 	"strings"
 	"syscall"
 
-	certdesc "github.com/varlink/go/certification"
-	varlink "github.com/varlink/go/v2/varlink"
+	certdesc "github.com/m-horky/uapi20-go/certification"
+	varlink "github.com/m-horky/uapi20-go/v2/varlink"
 )
 
 func main() {

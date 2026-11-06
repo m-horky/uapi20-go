@@ -12,7 +12,7 @@ import (
 	"net/url"
 	"sync"
 
-	"github.com/varlink/go/v2/varlink"
+	"github.com/m-horky/uapi20-go/v2/varlink"
 
 	"golang.org/x/net/websocket"
 )

@@ -11,8 +11,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/varlink/go/v2/internal/codec"
-	"github.com/varlink/go/v2/varlink/idl"
+	"github.com/m-horky/uapi20-go/v2/internal/codec"
+	"github.com/m-horky/uapi20-go/v2/varlink/idl"
 )
 
 // connQueueSize bounds the number of pipelined calls buffered per

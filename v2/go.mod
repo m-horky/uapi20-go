@@ -1,4 +1,4 @@
-module github.com/varlink/go/v2
+module github.com/m-horky/uapi20-go/v2
 
 go 1.26.0
 

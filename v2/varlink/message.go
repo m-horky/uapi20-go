@@ -1,6 +1,6 @@
 package varlink
 
-import "github.com/varlink/go/v2/internal/codec"
+import "github.com/m-horky/uapi20-go/v2/internal/codec"
 
 // Message is the JSON wire representation used by the v2 codec/runtime stack.
 type Message = codec.Message
