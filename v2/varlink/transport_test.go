@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -115,6 +116,9 @@ func TestDialUnix(t *testing.T) {
 }
 
 func TestDialAbstractUnix(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("abstract unix sockets are only supported on Linux")
+	}
 	const name = "@org.example.go.test.abstract"
 	server, _ := newTestListenerServer(t, "unix:"+name)
 
@@ -151,7 +155,10 @@ func TestDialErrors(t *testing.T) {
 		t.Fatal("Dial() to missing socket unexpectedly succeeded")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Nanosecond)
+	// Use a deadline that has already passed so that the dialer observes
+	// the context before attempting to connect. A very short timeout can
+	// race with an immediate connection error such as ECONNREFUSED.
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
 	defer cancel()
 	if _, err := Dial(ctx, "tcp:127.0.0.1:1"); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("Dial() error = %v, want context.DeadlineExceeded", err)
