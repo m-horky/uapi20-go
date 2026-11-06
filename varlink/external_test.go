@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/varlink/go/varlink"
+	"github.com/m-horky/uapi20-go/varlink"
 )
 
 type VarlinkInterface struct{}
@@ -45,7 +45,7 @@ func TestRegisterService(t *testing.T) {
 		"Varlink",
 		"Varlink Test",
 		"1",
-		"https://github.com/varlink/go/varlink",
+		"https://github.com/m-horky/uapi20-go/varlink",
 	)
 	if err != nil {
 		t.Fatalf("NewService(): %v", err)
@@ -91,7 +91,7 @@ func TestUnix(t *testing.T) {
 		"Varlink",
 		"Varlink Test",
 		"1",
-		"https://github.com/varlink/go/varlink",
+		"https://github.com/m-horky/uapi20-go/varlink",
 	)
 
 	if err != nil {
@@ -125,7 +125,7 @@ func TestInvalidAddress(t *testing.T) {
 		"Varlink",
 		"Varlink Test",
 		"1",
-		"https://github.com/varlink/go/varlink",
+		"https://github.com/m-horky/uapi20-go/varlink",
 	)
 
 	if err != nil {
@@ -162,7 +162,7 @@ func TestAnonUnix(t *testing.T) {
 		"Varlink",
 		"Varlink Test",
 		"1",
-		"https://github.com/varlink/go/varlink",
+		"https://github.com/m-horky/uapi20-go/varlink",
 	)
 
 	if err != nil {
@@ -196,7 +196,7 @@ func TestListenFDSNotInt(t *testing.T) {
 		"Varlink",
 		"Varlink Test",
 		"1",
-		"https://github.com/varlink/go/varlink",
+		"https://github.com/m-horky/uapi20-go/varlink",
 	)
 
 	if err != nil {

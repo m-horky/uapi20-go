@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/varlink/go/varlink/internal/ctxio"
+	"github.com/m-horky/uapi20-go/varlink/internal/ctxio"
 )
 
 type dispatcher interface {

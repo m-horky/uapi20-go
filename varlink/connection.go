@@ -8,7 +8,7 @@ import (
 	"net"
 	"strings"
 
-	"github.com/varlink/go/varlink/internal/ctxio"
+	"github.com/m-horky/uapi20-go/varlink/internal/ctxio"
 )
 
 // Message flags for Send(). More indicates that the client accepts more than one method

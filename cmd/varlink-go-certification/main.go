@@ -13,8 +13,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/varlink/go/cmd/varlink-go-certification/orgvarlinkcertification"
-	"github.com/varlink/go/varlink"
+	"github.com/m-horky/uapi20-go/cmd/varlink-go-certification/orgvarlinkcertification"
+	"github.com/m-horky/uapi20-go/varlink"
 )
 
 func run_client(ctx context.Context, address string) {
@@ -586,7 +586,7 @@ func run_server(ctx context.Context, address string) {
 		"Varlink",
 		"Certification",
 		"1",
-		"https://github.com/varlink/go",
+		"https://github.com/m-horky/uapi20-go",
 	)
 	if err != nil {
 		fmt.Println(err)

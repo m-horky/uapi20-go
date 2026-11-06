@@ -3,7 +3,7 @@
 package varlink
 
 import (
-	"github.com/varlink/go/varlink/internal/ctxio"
+	"github.com/m-horky/uapi20-go/varlink/internal/ctxio"
 	"io"
 	"os/exec"
 )

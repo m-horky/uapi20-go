@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/varlink/go/v2/varlink/idl"
+	"github.com/m-horky/uapi20-go/v2/varlink/idl"
 )
 
 // Logger matches the subset of loggers the server needs.

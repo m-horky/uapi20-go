@@ -35,7 +35,7 @@ error Failed(reason: string)
 
 	text := string(out)
 	checks := []string{
-		`"github.com/varlink/go/v2/varlink"`,
+		`"github.com/m-horky/uapi20-go/v2/varlink"`,
 		`type Payload struct`,
 		`Object json.RawMessage`,
 		`Value`,

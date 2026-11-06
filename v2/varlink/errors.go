@@ -3,7 +3,7 @@ package varlink
 import (
 	"errors"
 
-	"github.com/varlink/go/v2/internal/codec"
+	"github.com/m-horky/uapi20-go/v2/internal/codec"
 )
 
 // Well-known error names defined by the org.varlink.service interface. These

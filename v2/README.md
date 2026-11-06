@@ -1,14 +1,10 @@
 # go/varlink v2
 
-This module is the staging area for the next major version of `go-varlink`.
+This repository contains an implementation of the Varlink protocol in Go.
 
-The v1 module remains at the repository root:
+It is an AI fork of the official [varlink/go](https://github.com/varlink/go) repository, exposing a `v2` API based on [noxiouz/v2](https://github.com/noxiouz/go/tree/v2) branch, further extended to target [the UAPI.20](https://uapi-group.org/specifications/specs/varlink/) Varlink specification.
 
-- `github.com/varlink/go`
-
-The new module lives under `v2/`:
-
-- `github.com/varlink/go/v2`
+Its implementation is very much AI-driven, with some human oversight. The intent isn't to replace the official library, but to provide an early view into possible APIs an UAPI-conforming version of the library would expose. Correctness of the implementation is _a side effect_, however desirable.
 
 ## Goals
 
@@ -16,10 +12,11 @@ The new module lives under `v2/`:
 - Make streaming, upgrade, and error handling first-class API concepts.
 - Separate runtime policy from wire framing and code generation.
 - Add defensive defaults such as bounded frame sizes and transport-level deadlines.
+- Support UAPI.20.
 
 ## Migration Strategy
 
-1. Stabilize the v2 runtime API in this module.
+1. Experiment with the v2 runtime API in this module.
 2. Port generators to emit v2-aware typed clients and servers.
 3. Deprecate the legacy closure-based APIs once the generated code uses the new runtime.
 
