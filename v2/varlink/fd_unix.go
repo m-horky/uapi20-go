@@ -45,7 +45,6 @@ type fdConn struct {
 	raw        bool       // detached (upgraded protocol) mode
 	midMessage bool       // stream position is inside an unfinished message
 	curFDs     []*os.File // descriptors of the message currently arriving
-	carry      []*os.File // descriptors for the next message to start
 	queue      [][]*os.File
 }
 
@@ -119,24 +118,35 @@ func (c *fdConn) recv(p []byte) (int, error) {
 // scanChunk updates the message-boundary and descriptor-association state
 // for one chunk of received data.
 func (c *fdConn) scanChunk(data []byte, files []*os.File) {
-	atStart := !c.midMessage
-	if atStart {
-		if len(c.carry) > 0 || len(files) > 0 {
-			c.curFDs = append(c.carry, files...)
-			c.carry = nil
+	// Linux may coalesce data from several sendmsg(2) calls into one
+	// recvmsg(2), but stops at the segment carrying SCM_RIGHTS. The
+	// descriptors therefore belong to the last message that starts in this
+	// chunk, not necessarily to the one the chunk begins with.
+	target := -1
+	if len(files) > 0 {
+		if !c.midMessage {
+			target = 0
 		}
-	} else if bytes.IndexByte(data, 0) >= 0 {
-		// The chunk completes the current message and contains the start
-		// of a new one; the descriptors belong to that new message.
-		c.carry = append(c.carry, files...)
-	} else if len(files) > 0 {
-		// Descriptors arrived with a chunk that neither starts nor
-		// contains the start of a new message. The sender violated the
-		// protocol; the descriptors must not be accepted.
-		closeFiles(files)
+		for i := 0; i+1 < len(data); i++ {
+			if data[i] == 0 {
+				target = i + 1
+			}
+		}
+		if target < 0 {
+			// Descriptors arrived in the middle of a message; do not
+			// accept them.
+			closeFiles(files)
+			files = nil
+		}
 	}
 
-	c.midMessage = true
+	cur := c.curFDs
+	c.curFDs = nil
+	if target == 0 {
+		cur = append(cur, files...)
+		files = nil
+	}
+
 	off := 0
 	for {
 		i := bytes.IndexByte(data[off:], 0)
@@ -144,19 +154,24 @@ func (c *fdConn) scanChunk(data []byte, files []*os.File) {
 			break
 		}
 		// The message starting at off is complete; its descriptors are
-		// curFDs (assigned when it started).
-		c.queue = append(c.queue, c.curFDs)
-		c.curFDs = nil
+		// cur (assigned when it started).
+		c.queue = append(c.queue, cur)
+		cur = nil
 		off += i + 1
-		if off < len(data) {
-			if len(c.carry) > 0 {
-				c.curFDs = c.carry
-				c.carry = nil
-			}
-		} else {
-			c.midMessage = false
+		if off < len(data) && target == off {
+			cur = files
+			files = nil
 		}
 	}
+	if off < len(data) {
+		c.midMessage = true
+		c.curFDs = cur
+	} else {
+		c.midMessage = false
+	}
+	// The target is always a start offset within data, so this is only a
+	// safety net against an inconsistent state.
+	closeFiles(files)
 }
 
 // takeMessageFDs returns the descriptors received with the message most
@@ -175,9 +190,7 @@ func (c *fdConn) takeMessageFDs() []*os.File {
 // dropQueued closes every descriptor held for pending messages.
 func (c *fdConn) dropQueued() {
 	closeFiles(c.curFDs)
-	closeFiles(c.carry)
 	c.curFDs = nil
-	c.carry = nil
 	for _, files := range c.queue {
 		closeFiles(files)
 	}
@@ -194,10 +207,6 @@ func (c *fdConn) detachFD() {
 	if len(c.curFDs) > 0 {
 		c.queue = append(c.queue, c.curFDs)
 		c.curFDs = nil
-	}
-	if len(c.carry) > 0 {
-		c.queue = append(c.queue, c.carry)
-		c.carry = nil
 	}
 }
 
@@ -267,8 +276,8 @@ func (c *fdConn) ReadMsg(p []byte) (int, []*os.File, error) {
 // messages.
 func (c *fdConn) Close() error {
 	c.mu.Lock()
-	pending := append(append(c.curFDs, c.carry...), flattenFDs(c.queue)...)
-	c.curFDs, c.carry, c.queue = nil, nil, nil
+	pending := append(append([]*os.File(nil), c.curFDs...), flattenFDs(c.queue)...)
+	c.curFDs, c.queue = nil, nil
 	c.mu.Unlock()
 	closeFiles(pending)
 	return c.conn.Close()
