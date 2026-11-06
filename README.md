@@ -1,10 +1,11 @@
-[![Build Status](https://github.com/varlink/go/workflows/Go/badge.svg)](https://github.com/varlink/go/actions?query=workflow%3AGo)
-[![Go Report Card](https://goreportcard.com/badge/github.com/varlink/go)](https://goreportcard.com/report/github.com/varlink/go)
-[![Go Doc](https://img.shields.io/badge/godoc-reference-blue.svg?style=flat-square)](http://godoc.org/github.com/varlink/go/varlink)
-[![Coverage Status](https://coveralls.io/repos/github/varlink/go/badge.svg?branch=master)](https://coveralls.io/github/varlink/go?branch=master)
-[![Release](https://img.shields.io/github/release/golang-standards/project-layout.svg?style=flat-square)](https://github.com/varlink/go/releases/latest)
-
 # go/varlink
 
-This is an implementation of the varlink protocol in golang.
-An implementation of the varlink CLI tool in golang can be found on https://github.com/varlink/go-varlink-cmd
+This repository contains an implementation of the Varlink protocol in Go.
+
+It is an AI fork of the official [varlink/go](https://github.com/varlink/go) repository, exposing a `v2` API based on [noxiouz/v2](https://github.com/noxiouz/go/tree/v2) branch, further extended to target [the UAPI.20](https://uapi-group.org/specifications/specs/varlink/) Varlink specification.
+
+Its implementation is very much AI-driven, with some human oversight. The intent isn't to replace the official library, but to provide an early view into possible APIs an UAPI-conforming version of the library would expose. Correctness of the implementation is _a side effect_, however desirable.
+
+## License
+
+[Apache 2.0](./LICENSE)
