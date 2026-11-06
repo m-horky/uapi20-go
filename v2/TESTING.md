@@ -81,6 +81,18 @@ go generate ./cmd/...
 go test ./cmd/varlink-go-certification/...
 ```
 
+For cross-implementation validation, `certification/` runs the Go v2 and
+reference Python implementations against each other, including the
+certification client/server scenarios in both directions. It also validates
+MUST-level wire-framing behaviour with raw protocol probes:
+
+```sh
+python3 -m pip install varlink
+sh certification/run-interop.sh
+```
+
+The same matrix runs in `.github/workflows/certification.yml`.
+
 ## CI (`.github/workflows/go.yml`)
 
 On every push and pull request, the workflow builds and tests the module

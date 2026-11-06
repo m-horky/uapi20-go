@@ -1,0 +1,48 @@
+name: Certification
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  interop:
+    name: Go/Python interop
+    runs-on: ubuntu-latest
+    steps:
+    - name: Check out code
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        persist-credentials: false
+
+    - name: Set up Go
+      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      with:
+        go-version: "latest"
+        cache-dependency-path: |
+          certification/go.sum
+          v2/go.sum
+
+    - name: Set up Python
+      uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+      with:
+        python-version: "latest"
+
+    - name: Install reference Python implementation
+      run: python3 -m pip install --disable-pip-version-check varlink==31.0.0
+
+    - name: Run Go/Python cross-implementation tests
+      run: sh certification/run-interop.sh
+
+    - name: Upload test results
+      if: always()
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      with:
+        name: certification-results
+        path: /tmp/varlink-certification
+        if-no-files-found: ignore

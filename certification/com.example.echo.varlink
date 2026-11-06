@@ -1,0 +1,60 @@
+# Example interface used to exercise varlink interoperability between the
+# Go implementation (github.com/m-horky/uapi20) and the reference Python
+# implementation (github.com/varlink/python).
+interface com.example.echo
+
+# A record stored by the service.
+type Record (
+  id: int,
+  name: string,
+  labels: [string]string,
+  tags: []string
+)
+
+# Processing modes.
+type Mode (fast, slow)
+
+# Echo a string back.
+method Ping(ping: string) -> (pong: string)
+
+# Integer addition.
+method Add(a: int, b: int) -> (sum: int)
+
+# Floating point division.
+method Divide(a: float, b: float) -> (quotient: float)
+
+# Negate a boolean.
+method Toggle(flag: bool) -> (flag: bool)
+
+# Join strings with an optional separator.
+method Join(items: []string, separator: ?string) -> (joined: string)
+
+# Look up a stored record.
+method Lookup(id: int) -> (record: Record)
+
+# Split text into its distinct words.
+method Words(text: string) -> (words: [string]())
+
+# Echo the processing mode.
+method Choose(mode: Mode) -> (mode: Mode)
+
+# Count the members of an arbitrary JSON object.
+method CountMembers(value: object) -> (members: int)
+
+# Report whether the call carried file descriptors.
+method CheckFD() -> (received: bool)
+
+# Fail with a service error.
+method Fail(code: int) -> ()
+
+# Receive a oneway notification.
+method Notify(message: string) -> ()
+
+# Stream `count` replies.
+method Watch(count: int) -> (index: int)
+
+# Take over the connection with a raw line-echo protocol.
+method Bridge() -> ()
+
+error NoSuchRecord (id: int)
+error TooBusy (retry_after: int)
