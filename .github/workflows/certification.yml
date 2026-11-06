@@ -23,7 +23,8 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
       with:
-        go-version: "latest"
+        go-version: "stable"
+        check-latest: true
         cache-dependency-path: |
           certification/go.sum
           v2/go.sum
@@ -31,7 +32,8 @@ jobs:
     - name: Set up Python
       uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
       with:
-        python-version: "latest"
+        python-version: "3.x"
+        check-latest: true
 
     - name: Install reference Python implementation
       run: python3 -m pip install --disable-pip-version-check varlink==31.0.0
