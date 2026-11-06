@@ -8,7 +8,6 @@ import (
 	"io"
 	"net"
 	"os"
-	"path/filepath"
 	"testing"
 	"time"
 )
@@ -31,7 +30,7 @@ func newUnixTestServer(t *testing.T, cfg ServerConfig, register func(*ServerBuil
 	register(builder)
 	server := builder.Build()
 
-	path := filepath.Join(t.TempDir(), "test.sock")
+	path := newUnixTestSocketPath(t)
 	ln, err := server.Listen(context.Background(), "unix:"+path)
 	if err != nil {
 		t.Fatalf("Listen() error = %v", err)
