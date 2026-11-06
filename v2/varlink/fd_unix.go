@@ -5,6 +5,7 @@ package varlink
 import (
 	"bytes"
 	"io"
+	"math"
 	"net"
 	"os"
 	"sync"
@@ -226,6 +227,9 @@ func (c *fdConn) WriteMsg(p []byte, files []*os.File) error {
 // writeFrame writes one NUL-terminated frame with its descriptors attached
 // to the first byte, in a single sendmsg call.
 func (c *fdConn) writeFrame(frame []byte, files []*os.File) error {
+	if len(frame) >= math.MaxInt {
+		return ErrFrameTooLarge
+	}
 	buf := make([]byte, len(frame)+1)
 	copy(buf, frame)
 	buf[len(buf)-1] = 0
