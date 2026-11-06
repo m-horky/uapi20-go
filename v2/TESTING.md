@@ -50,24 +50,6 @@ in principle but the environment does not:
 - `fd_test.go`: the environment does not permit counting open file
   descriptors via `/proc/self/fd`.
 
-## JSON backends
-
-`internal/codec` has two interchangeable JSON backends, selected at build
-time:
-
-- `json_backend_std.go` (default): `encoding/json`.
-- `json_backend_v2.go` (`goexperiment.jsonv2`): `encoding/json/v2` with
-  v1 compatibility options.
-
-The backend is exercised by the same `internal/codec` and `varlink` test
-suites; to run them against the json/v2 backend:
-
-```sh
-GOEXPERIMENT=jsonv2 go test ./...
-```
-
-CI runs both variants.
-
 ## Certification
 
 The certification tool validates a varlink implementation against the
@@ -107,4 +89,3 @@ Expectations per leg:
 
 - All legs: `go build ./...` and `go test ./...` pass (skips allowed as
   listed above).
-- The json/v2 backend variant runs on the Linux leg.

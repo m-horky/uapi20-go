@@ -93,8 +93,7 @@ func TestAddressString(t *testing.T) {
 }
 
 func TestDialUnix(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "org.example.test")
+	path := newUnixTestSocketPath(t)
 
 	server, addr := newTestListenerServer(t, "unix:"+path)
 
@@ -160,8 +159,7 @@ func TestDialErrors(t *testing.T) {
 }
 
 func TestDialWithConfig(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "org.example.test")
+	path := newUnixTestSocketPath(t)
 	newTestListenerServer(t, "unix:"+path)
 
 	client, err := DialWithConfig(context.Background(), "unix:"+path, ClientConfig{})
@@ -182,8 +180,7 @@ func TestDialWithConfig(t *testing.T) {
 }
 
 func TestListenerCloseRemovesUnixSocket(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "org.example.test")
+	path := newUnixTestSocketPath(t)
 
 	server := NewServerBuilder(ServerConfig{})
 	mustInterface(t, server, pingDescription())
@@ -206,8 +203,7 @@ func TestListenerCloseRemovesUnixSocket(t *testing.T) {
 }
 
 func TestListenerRemovesStaleSocket(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "org.example.test")
+	path := newUnixTestSocketPath(t)
 
 	// A leftover socket file is removed before listening.
 	stale, err := net.Listen("unix", path)
@@ -292,8 +288,7 @@ func TestListenerServeStopsOnClose(t *testing.T) {
 }
 
 func TestListenerServesConcurrentClients(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "org.example.test")
+	path := newUnixTestSocketPath(t)
 	newTestListenerServer(t, "unix:"+path)
 
 	clients := make([]*ConnClient, 4)
@@ -374,8 +369,7 @@ func newTestListenerServer(t *testing.T, address string) (*ConnClient, string) {
 }
 
 func TestListenerRefusesLiveSocket(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "org.example.test")
+	path := newUnixTestSocketPath(t)
 
 	// A socket another process is still serving must not be removed.
 	live, err := net.Listen("unix", path)
@@ -444,13 +438,22 @@ func TestListenerConnectionLimit(t *testing.T) {
 		t.Fatal("Invoke() on a connection beyond the limit unexpectedly succeeded")
 	}
 
-	// Closing the first connection frees its slot.
+	// Closing the first connection frees its slot. The server learns about
+	// the close asynchronously, so retry until the slot is actually free.
 	if err := first.Close(); err != nil {
 		t.Fatalf("first.Close() error = %v", err)
 	}
-	third := dial()
-	defer third.Close()
-	if err := third.Invoke(context.Background(), "org.example.test.Ping", map[string]string{"message": "hi"}, &out); err != nil {
-		t.Fatalf("Invoke() after freeing a slot error = %v", err)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		third := dial()
+		err := third.Invoke(context.Background(), "org.example.test.Ping", map[string]string{"message": "hi"}, &out)
+		_ = third.Close()
+		if err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("Invoke() after freeing a slot error = %v", err)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }

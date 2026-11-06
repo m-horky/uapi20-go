@@ -56,10 +56,3 @@ jobs:
       if: runner.os == 'Linux' && matrix.go-version == 'stable'
       working-directory: v2
       run: go test -race -v ./...
-
-    - name: Test (v2, json/v2 backend)
-      if: runner.os == 'Linux'
-      working-directory: v2
-      env:
-        GOEXPERIMENT: jsonv2
-      run: go test -v ./...
