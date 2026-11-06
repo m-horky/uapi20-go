@@ -268,6 +268,32 @@ func TestOnewayFileDescriptors(t *testing.T) {
 	}
 }
 
+// TestFDConnCoalescedDescriptors verifies that descriptors delivered by the
+// kernel with a later message in the same recvmsg are not associated with an
+// earlier message that happens to start the chunk.
+func TestFDConnCoalescedDescriptors(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	defer w.Close()
+
+	c := &fdConn{}
+	c.scanChunk([]byte("first\x00second\x00"), []*os.File{r})
+
+	if files := c.takeMessageFDs(); len(files) != 0 {
+		closeFiles(files)
+		t.Fatalf("first message carried %d descriptors, want 0", len(files))
+	}
+	files := c.takeMessageFDs()
+	if len(files) != 1 || files[0] != r {
+		closeFiles(files)
+		t.Fatalf("second message carried %d descriptors, want the passed descriptor", len(files))
+	}
+	closeFiles(files)
+}
+
 // TestStreamFileDescriptors streams replies with and without descriptors
 // and verifies that each descriptor is associated with the message it was
 // sent with, even when several messages are received in one chunk.
