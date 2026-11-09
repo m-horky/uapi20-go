@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"io"
-	"os"
 	"sync"
 	"time"
 
@@ -35,59 +34,14 @@ func NewClient(conn io.ReadWriteCloser, cfg ClientConfig) *ConnClient {
 	}
 }
 
-// Invoke calls method and waits for its single reply.
-func (c *ConnClient) Invoke(ctx context.Context, method string, in any, out any) error {
-	_, err := c.invoke(ctx, method, in, out, nil)
-	return err
+// Invoke calls method and waits for its single reply. See Client.Invoke
+// for the file descriptor options.
+func (c *ConnClient) Invoke(ctx context.Context, method string, in any, out any, opts ...CallOption) error {
+	return c.invoke(ctx, method, in, out, newCallOptions(opts))
 }
 
-// InvokeFDs calls method, sending files with the call and returning the
-// files received with the reply.
-func (c *ConnClient) InvokeFDs(ctx context.Context, method string, in any, out any, files []*os.File) ([]*os.File, error) {
-	return c.invoke(ctx, method, in, out, files)
-}
-
-func (c *ConnClient) invoke(ctx context.Context, method string, in any, out any, files []*os.File) ([]*os.File, error) {
-	c.opMu.Lock()
-	defer c.opMu.Unlock()
-
-	transport, err := c.ensureUsable()
-	if err != nil {
-		return nil, err
-	}
-	if err := sendRequest(ctx, transport, c.cfg.WriteTimeout, method, in, false, false, false, files); err != nil {
-		return nil, c.fail(err)
-	}
-
-	msg, replyFDs, err := readReplyFDs(ctx, transport, c.cfg.ReadTimeout, method)
-	if err != nil {
-		closeFiles(replyFDs)
-		if isRemoteError(err) {
-			return nil, err
-		}
-		return nil, c.fail(err)
-	}
-	if msg.Continues {
-		closeFiles(replyFDs)
-		return nil, c.fail(&ReplyError{Method: method, Err: ErrUnexpectedReply})
-	}
-	if msg.Parameters != nil {
-		if err := codec.DecodeParameters(msg.Parameters, out); err != nil {
-			closeFiles(replyFDs)
-			return nil, &ReplyError{Method: method, Err: err}
-		}
-	}
-	return replyFDs, nil
-}
-
-// Oneway calls method without waiting for (or allowing) a reply.
-func (c *ConnClient) Oneway(ctx context.Context, method string, in any) error {
-	return c.OnewayFDs(ctx, method, in, nil)
-}
-
-// OnewayFDs calls method without waiting for a reply, sending files with
-// the call.
-func (c *ConnClient) OnewayFDs(ctx context.Context, method string, in any, files []*os.File) error {
+// invoke performs one unary call with the effective call options.
+func (c *ConnClient) invoke(ctx context.Context, method string, in any, out any, opts callOptions) error {
 	c.opMu.Lock()
 	defer c.opMu.Unlock()
 
@@ -95,22 +49,70 @@ func (c *ConnClient) OnewayFDs(ctx context.Context, method string, in any, files
 	if err != nil {
 		return err
 	}
-	if err := sendRequest(ctx, transport, c.cfg.WriteTimeout, method, in, false, true, false, files); err != nil {
+	if err := sendRequest(ctx, transport, c.cfg.WriteTimeout, method, in, false, false, false, opts.files); err != nil {
+		return c.fail(err)
+	}
+
+	msg, replyFDs, err := readReplyFDs(ctx, transport, c.cfg.ReadTimeout, method)
+	if err != nil {
+		// Descriptors received with an error reply are not handed to the
+		// caller: ReceiveFiles stores them only on success.
+		replyFDs.Close()
+		if isRemoteError(err) {
+			return err
+		}
+		return c.fail(err)
+	}
+	if err := decodeFinalReply(method, msg, out); err != nil {
+		replyFDs.Close()
+		// A continues reply to a non-streaming call is a protocol
+		// violation; a decode failure leaves the connection usable.
+		if errors.Is(err, ErrUnexpectedReply) {
+			return c.fail(err)
+		}
+		return err
+	}
+	opts.deliver(replyFDs)
+	return nil
+}
+
+// Oneway calls method without waiting for (or allowing) a reply. See
+// Client.Oneway for the file descriptor options.
+func (c *ConnClient) Oneway(ctx context.Context, method string, in any, opts ...CallOption) error {
+	o := newCallOptions(opts)
+	if err := o.requireNoReply(); err != nil {
+		return err
+	}
+
+	c.opMu.Lock()
+	defer c.opMu.Unlock()
+
+	transport, err := c.ensureUsable()
+	if err != nil {
+		return err
+	}
+	if err := sendRequest(ctx, transport, c.cfg.WriteTimeout, method, in, false, true, false, o.files); err != nil {
 		return c.fail(err)
 	}
 	return nil
 }
 
-// Stream calls method with the more flag set and returns a receiver for its
-// replies.
-func (c *ConnClient) Stream(ctx context.Context, method string, in any) (Stream, error) {
+// Stream calls method with the more flag set and returns a receiver for
+// its replies. SendFiles sends files with the opening call; ReceiveFiles is
+// not applicable to it.
+func (c *ConnClient) Stream(ctx context.Context, method string, in any, opts ...CallOption) (Stream, error) {
+	o := newCallOptions(opts)
+	if err := o.requireNoReply(); err != nil {
+		return nil, err
+	}
+
 	c.opMu.Lock()
 	transport, err := c.ensureUsable()
 	if err != nil {
 		c.opMu.Unlock()
 		return nil, err
 	}
-	if err := sendRequest(ctx, transport, c.cfg.WriteTimeout, method, in, true, false, false, nil); err != nil {
+	if err := sendRequest(ctx, transport, c.cfg.WriteTimeout, method, in, true, false, false, o.files); err != nil {
 		c.opMu.Unlock()
 		return nil, c.fail(err)
 	}
@@ -121,10 +123,13 @@ func (c *ConnClient) Stream(ctx context.Context, method string, in any) (Stream,
 	}, nil
 }
 
-// Upgrade calls method with the upgrade flag set. On success the connection,
-// including any bytes already received after the confirming reply, is
-// returned for use by the upgraded protocol.
-func (c *ConnClient) Upgrade(ctx context.Context, method string, in any, out any) (UpgradedConn, error) {
+// Upgrade calls method with the upgrade flag set. On success the
+// connection, including any bytes already received after that reply, is
+// returned for use by the upgraded protocol. See Client.Upgrade for the
+// file descriptor options.
+func (c *ConnClient) Upgrade(ctx context.Context, method string, in any, out any, opts ...CallOption) (UpgradedConn, error) {
+	o := newCallOptions(opts)
+
 	c.opMu.Lock()
 	defer c.opMu.Unlock()
 
@@ -132,31 +137,31 @@ func (c *ConnClient) Upgrade(ctx context.Context, method string, in any, out any
 	if err != nil {
 		return nil, err
 	}
-	if err := sendRequest(ctx, transport, c.cfg.WriteTimeout, method, in, false, false, true, nil); err != nil {
+	if err := sendRequest(ctx, transport, c.cfg.WriteTimeout, method, in, false, false, true, o.files); err != nil {
 		return nil, c.fail(err)
 	}
 
 	msg, replyFDs, err := readReplyFDs(ctx, transport, c.cfg.ReadTimeout, method)
-	closeFiles(replyFDs)
 	if err != nil {
+		// Descriptors received with an error reply are not handed to the
+		// caller: ReceiveFiles stores them only on success.
+		replyFDs.Close()
 		if isRemoteError(err) {
 			return nil, err
 		}
 		return nil, c.fail(err)
 	}
-	if msg.Continues {
-		return nil, c.fail(&ReplyError{Method: method, Err: ErrUnexpectedReply})
-	}
-	if msg.Parameters != nil {
-		if err := codec.DecodeParameters(msg.Parameters, out); err != nil {
-			return nil, c.fail(&ReplyError{Method: method, Err: err})
-		}
+	if err := decodeFinalReply(method, msg, out); err != nil {
+		replyFDs.Close()
+		return nil, c.fail(err)
 	}
 
 	conn := c.detach()
 	if conn == nil {
+		replyFDs.Close()
 		return nil, io.ErrClosedPipe
 	}
+	o.deliver(replyFDs)
 	return conn, nil
 }
 
@@ -219,7 +224,7 @@ func (c *ConnClient) fail(err error) error {
 
 // sendRequest writes one call message, attaching files to it when the
 // transport supports file descriptor passing.
-func sendRequest(ctx context.Context, transport *framedTransport, timeout time.Duration, method string, in any, more, oneway, upgrade bool, files []*os.File) error {
+func sendRequest(ctx context.Context, transport *framedTransport, timeout time.Duration, method string, in any, more, oneway, upgrade bool, files Files) error {
 	if method == "" {
 		return ErrInvalidMethod
 	}
@@ -243,7 +248,7 @@ func isRemoteError(err error) bool {
 
 // readReplyFDs reads and validates one reply to a call on method, returning
 // the file descriptors received with it.
-func readReplyFDs(ctx context.Context, transport *framedTransport, timeout time.Duration, method string) (Message, []*os.File, error) {
+func readReplyFDs(ctx context.Context, transport *framedTransport, timeout time.Duration, method string) (Message, Files, error) {
 	msg, files, err := transport.readMessageFDs(ctx, timeout)
 	if err != nil {
 		if errors.Is(err, io.EOF) {
@@ -261,12 +266,19 @@ func readReplyFDs(ctx context.Context, transport *framedTransport, timeout time.
 	return msg, files, nil
 }
 
-// readReply reads and validates one reply, discarding any file descriptors
-// received with it.
-func readReply(ctx context.Context, transport *framedTransport, timeout time.Duration, method string) (Message, error) {
-	msg, files, err := readReplyFDs(ctx, transport, timeout, method)
-	closeFiles(files)
-	return msg, err
+// decodeFinalReply validates that msg terminates the exchange for method
+// and decodes its parameters into out. A continues reply is rejected as
+// ErrUnexpectedReply.
+func decodeFinalReply(method string, msg Message, out any) error {
+	if msg.Continues {
+		return &ReplyError{Method: method, Err: ErrUnexpectedReply}
+	}
+	if msg.Parameters != nil {
+		if err := codec.DecodeParameters(msg.Parameters, out); err != nil {
+			return &ReplyError{Method: method, Err: err}
+		}
+	}
+	return nil
 }
 
 // GetInfo calls org.varlink.service.GetInfo and returns the service
@@ -313,34 +325,33 @@ type clientStream struct {
 	closed    bool
 }
 
-func (s *clientStream) Recv(ctx context.Context, out any) error {
-	_, err := s.recv(ctx, out)
-	return err
-}
+// Recv receives one reply. See Stream.Recv for the file descriptor
+// options.
+func (s *clientStream) Recv(ctx context.Context, out any, opts ...CallOption) error {
+	o := newCallOptions(opts)
+	if err := o.requireNoFiles(); err != nil {
+		return err
+	}
 
-// RecvFDs receives one reply and returns the file descriptors it carries.
-func (s *clientStream) RecvFDs(ctx context.Context, out any) ([]*os.File, error) {
-	return s.recv(ctx, out)
-}
-
-func (s *clientStream) recv(ctx context.Context, out any) ([]*os.File, error) {
 	if s.closed {
-		return nil, ErrStreamClosed
+		return ErrStreamClosed
 	}
 	if s.done {
-		return nil, io.EOF
+		return io.EOF
 	}
 
 	msg, files, err := readReplyFDs(ctx, s.transport, s.client.cfg.ReadTimeout, s.method)
 	if err != nil {
-		closeFiles(files)
 		client := s.client
 		s.done = true
 		s.release()
+		// Descriptors received with an error reply are not handed to the
+		// caller: ReceiveFiles stores them only on success.
+		files.Close()
 		if isRemoteError(err) || client == nil {
-			return nil, err
+			return err
 		}
-		return nil, client.fail(err)
+		return client.fail(err)
 	}
 	if msg.Parameters != nil {
 		if err := codec.DecodeParameters(msg.Parameters, out); err != nil {
@@ -349,16 +360,17 @@ func (s *clientStream) recv(ctx context.Context, out any) ([]*os.File, error) {
 			s.done = true
 			s.release()
 			if client == nil {
-				return nil, &ReplyError{Method: s.method, Err: err}
+				return &ReplyError{Method: s.method, Err: err}
 			}
-			return nil, client.fail(&ReplyError{Method: s.method, Err: err})
+			return client.fail(&ReplyError{Method: s.method, Err: err})
 		}
 	}
 	if !msg.Continues {
 		s.done = true
 		s.release()
 	}
-	return files, nil
+	o.deliver(files)
+	return nil
 }
 
 func (s *clientStream) Close() error {
@@ -383,18 +395,14 @@ func (s *clientStream) release() {
 	}
 }
 
+// batchOp is one call queued in a batch, together with its effective call
+// options.
 type batchOp struct {
 	method string
 	in     any
 	out    any
 	oneway bool
-}
-
-type batchRequest struct {
-	method string
-	out    any
-	oneway bool
-	msg    Message
+	opts   callOptions
 }
 
 type clientBatch struct {
@@ -403,19 +411,27 @@ type clientBatch struct {
 	sent   bool
 }
 
-func (b *clientBatch) Invoke(method string, in any, out any) {
+// Invoke queues a unary call with the given options; SendFiles sends
+// files with it, and ReceiveFiles stores the files of its reply once Send
+// has succeeded.
+func (b *clientBatch) Invoke(method string, in any, out any, opts ...CallOption) {
 	b.ops = append(b.ops, batchOp{
 		method: method,
 		in:     in,
 		out:    out,
+		opts:   newCallOptions(opts),
 	})
 }
 
-func (b *clientBatch) Oneway(method string, in any) {
+// Oneway queues a oneway call with the given options; SendFiles sends
+// files with it. ReceiveFiles does not apply to oneway calls; passing it
+// makes Send fail with ErrInvalidCallOption.
+func (b *clientBatch) Oneway(method string, in any, opts ...CallOption) {
 	b.ops = append(b.ops, batchOp{
 		method: method,
 		in:     in,
 		oneway: true,
+		opts:   newCallOptions(opts),
 	})
 }
 
@@ -438,87 +454,35 @@ func (b *clientBatch) Send(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	requests, err := b.prepareRequests()
-	if err != nil {
-		return err
-	}
 
-	writeErr := make(chan error, 1)
-	go func() {
-		for _, request := range requests {
-			if err := transport.writeMessage(ctx, b.client.cfg.WriteTimeout, request.msg); err != nil {
-				writeErr <- err
-				return
-			}
+	// Write all requests first, then read the replies in order. Frame size
+	// limits are enforced when each message is written.
+	for _, op := range b.ops {
+		if err := sendRequest(ctx, transport, b.client.cfg.WriteTimeout, op.method, op.in, false, op.oneway, false, op.opts.files); err != nil {
+			return b.client.fail(err)
 		}
-		writeErr <- nil
-	}()
-	writeDone := false
-	for _, request := range requests {
-		if request.oneway {
+	}
+	for _, op := range b.ops {
+		if op.oneway {
+			if op.opts.reply != nil {
+				return b.client.fail(ErrInvalidCallOption)
+			}
 			continue
 		}
-		if !writeDone {
-			select {
-			case err := <-writeErr:
-				if err != nil {
-					return b.client.fail(err)
-				}
-				writeDone = true
-			default:
-			}
-		}
-		msg, files, err := readReplyFDs(ctx, transport, b.client.cfg.ReadTimeout, request.method)
-		closeFiles(files)
+		msg, files, err := readReplyFDs(ctx, transport, b.client.cfg.ReadTimeout, op.method)
 		if err != nil {
+			// The replies queued behind the failed one are unread, so the
+			// connection is no longer usable; descriptors received with
+			// the error reply are closed, since ReceiveFiles stores them
+			// only on success.
+			files.Close()
 			return b.client.fail(err)
 		}
-		if msg.Continues {
-			return b.client.fail(&ReplyError{Method: request.method, Err: ErrUnexpectedReply})
-		}
-		if msg.Parameters != nil {
-			if err := codec.DecodeParameters(msg.Parameters, request.out); err != nil {
-				return b.client.fail(&ReplyError{Method: request.method, Err: err})
-			}
-		}
-	}
-	if !writeDone {
-		if err := <-writeErr; err != nil {
+		if err := decodeFinalReply(op.method, msg, op.out); err != nil {
+			files.Close()
 			return b.client.fail(err)
 		}
+		op.opts.deliver(files)
 	}
 	return nil
-}
-
-func (b *clientBatch) prepareRequests() ([]batchRequest, error) {
-	requests := make([]batchRequest, len(b.ops))
-	framer := codec.New(b.client.cfg.MaxFrameSize)
-	for i, op := range b.ops {
-		if op.method == "" {
-			return nil, ErrInvalidMethod
-		}
-		params, err := codec.MarshalParameters(op.in)
-		if err != nil {
-			return nil, err
-		}
-		msg := Message{
-			Method:     op.method,
-			Parameters: params,
-			Oneway:     op.oneway,
-		}
-		frame, err := codec.MarshalMessage(codec.Message(msg))
-		if err != nil {
-			return nil, err
-		}
-		if err := framer.WriteFrame(io.Discard, frame); err != nil {
-			return nil, err
-		}
-		requests[i] = batchRequest{
-			method: op.method,
-			out:    op.out,
-			oneway: op.oneway,
-			msg:    msg,
-		}
-	}
-	return requests, nil
 }

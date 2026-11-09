@@ -21,7 +21,7 @@ type configuration struct {
 }
 
 var out configuration
-err = client.Invoke(ctx, "org.example.ftl.CalculateConfiguration", map[string]any{
+err := client.Invoke(ctx, "org.example.ftl.CalculateConfiguration", map[string]any{
     "current": coordinate{Longitude: 27.13, Latitude: -12.4, Distance: 48732498234},
     "target":  coordinate{Longitude: -48.7, Latitude: 12.9, Distance: 354667658787},
 }, &out)
@@ -29,6 +29,10 @@ err = client.Invoke(ctx, "org.example.ftl.CalculateConfiguration", map[string]an
 
 `in` and `out` may be any Go value that marshals to / unmarshals from the
 method's parameter object, or `nil` for methods without parameters.
+
+Calls that pass [file descriptors](file-descriptors.md) add
+`varlink.SendFiles` and `varlink.ReceiveFiles` options after `out`; ordinary
+calls take no options.
 
 If the call fails, `Invoke` returns a `*varlink.RemoteError`; see
 [errors](errors.md).

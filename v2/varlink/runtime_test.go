@@ -46,6 +46,7 @@ func TestConnClientInvoke(t *testing.T) {
 	err := client.Invoke(context.Background(), "org.example.test.Ping", struct {
 		Message string `json:"message"`
 	}{Message: "hello"}, &out)
+
 	if err != nil {
 		t.Fatalf("Invoke() error = %v", err)
 	}
@@ -358,6 +359,7 @@ func TestConnClientUpgrade(t *testing.T) {
 			conn, err := call.Accept(ctx, struct {
 				Ready bool `json:"ready"`
 			}{Ready: true})
+
 			if err != nil {
 				return err
 			}
@@ -433,6 +435,7 @@ func TestServerUpgradePreservesBufferedBytes(t *testing.T) {
 		conn, err := call.Accept(ctx, struct {
 			Ready bool `json:"ready"`
 		}{Ready: true})
+
 		if err != nil {
 			return err
 		}
@@ -605,7 +608,8 @@ func TestServerCancelsHandlerOnClientDisconnect(t *testing.T) {
 	client := NewClient(clientConn, ClientConfig{})
 	invokeDone := make(chan error, 1)
 	go func() {
-		invokeDone <- client.Invoke(context.Background(), "org.example.test.Slow", nil, nil)
+		invokeErr := client.Invoke(context.Background(), "org.example.test.Slow", nil, nil)
+		invokeDone <- invokeErr
 	}()
 
 	<-handlerStarted
@@ -664,7 +668,7 @@ func TestServerPipelinesCalls(t *testing.T) {
 	batch.Invoke("org.example.test.Ping", map[string]int{"n": 1}, &first)
 	batch.Invoke("org.example.test.Ping", map[string]int{"n": 2}, &second)
 	if err := batch.Send(context.Background()); err != nil {
-		t.Fatalf("Batch.Send() error = %v", err)
+		t.Fatalf("Batch.Send(ctx) error = %v", err)
 	}
 	if first.N != 1 || second.N != 2 {
 		t.Fatalf("replies = %d, %d, want 1, 2", first.N, second.N)
@@ -741,7 +745,8 @@ func TestConnClientInvokeContextCancelClosesClient(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		done <- client.Invoke(ctx, "org.example.test.Ping", nil, nil)
+		invokeErr := client.Invoke(ctx, "org.example.test.Ping", nil, nil)
+		done <- invokeErr
 	}()
 	time.Sleep(10 * time.Millisecond)
 	cancel()
@@ -824,7 +829,7 @@ func TestConnClientBatchInvoke(t *testing.T) {
 	batch.Oneway("org.example.test.Notify", map[string]string{"message": "side"})
 	batch.Invoke("org.example.test.Ping", map[string]string{"message": "two"}, &second)
 	if err := batch.Send(context.Background()); err != nil {
-		t.Fatalf("Batch.Send() error = %v", err)
+		t.Fatalf("Batch.Send(ctx) error = %v", err)
 	}
 	if first.Message != "pong:one" {
 		t.Fatalf("first reply = %q", first.Message)
@@ -833,7 +838,7 @@ func TestConnClientBatchInvoke(t *testing.T) {
 		t.Fatalf("second reply = %q", second.Message)
 	}
 	if err := batch.Send(context.Background()); !errors.Is(err, ErrBatchSent) {
-		t.Fatalf("Batch.Send() second error = %v, want %v", err, ErrBatchSent)
+		t.Fatalf("Batch.Send(ctx) second error = %v, want %v", err, ErrBatchSent)
 	}
 }
 
@@ -851,6 +856,7 @@ func TestConnClientBatchRemoteErrorClosesClient(t *testing.T) {
 				return call.ReplyError(ctx, "org.example.test.Failed", struct {
 					Reason string `json:"reason"`
 				}{Reason: "boom"})
+
 			}
 			return call.Reply(ctx, struct {
 				Message string `json:"message"`
@@ -873,7 +879,7 @@ func TestConnClientBatchRemoteErrorClosesClient(t *testing.T) {
 	err := batch.Send(context.Background())
 	var remote *RemoteError
 	if !errors.As(err, &remote) {
-		t.Fatalf("Batch.Send() error = %T %v, want *RemoteError", err, err)
+		t.Fatalf("Batch.Send(ctx) error = %T %v, want *RemoteError", err, err)
 	}
 	if remote.Name != "org.example.test.Failed" {
 		t.Fatalf("remote name = %q", remote.Name)
@@ -893,7 +899,7 @@ func TestConnClientBatchInvalidRequestReturnsPromptly(t *testing.T) {
 	batch := client.Batch()
 	batch.Invoke("", nil, nil)
 	if err := batch.Send(context.Background()); !errors.Is(err, ErrInvalidMethod) {
-		t.Fatalf("Batch.Send() error = %v, want %v", err, ErrInvalidMethod)
+		t.Fatalf("Batch.Send(ctx) error = %v, want %v", err, ErrInvalidMethod)
 	}
 }
 
@@ -904,7 +910,7 @@ func TestConnClientBatchMarshalErrorReturnsPromptly(t *testing.T) {
 	batch := client.Batch()
 	batch.Invoke("org.example.test.Ping", map[string]any{"bad": make(chan int)}, nil)
 	if err := batch.Send(context.Background()); err == nil {
-		t.Fatal("Batch.Send() unexpectedly succeeded")
+		t.Fatal("Batch.Send(ctx) unexpectedly succeeded")
 	}
 }
 

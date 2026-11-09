@@ -5,7 +5,6 @@ import (
 	"errors"
 	"io"
 	"net"
-	"os"
 	"sync"
 	"time"
 
@@ -79,7 +78,7 @@ func (t *framedTransport) readMessage(ctx context.Context, timeout time.Duration
 
 // readMessageFDs reads one message and returns the file descriptors
 // received with it.
-func (t *framedTransport) readMessageFDs(ctx context.Context, timeout time.Duration) (Message, []*os.File, error) {
+func (t *framedTransport) readMessageFDs(ctx context.Context, timeout time.Duration) (Message, Files, error) {
 	stopDeadline, err := setReadDeadline(t.conn, ctx, timeout)
 	if err != nil {
 		return Message{}, nil, err
@@ -87,7 +86,7 @@ func (t *framedTransport) readMessageFDs(ctx context.Context, timeout time.Durat
 	defer stopDeadline()
 
 	msg, err := t.wire.ReadMessage()
-	var files []*os.File
+	var files Files
 	if t.fd != nil {
 		files = t.fd.takeMessageFDs()
 	}
@@ -111,7 +110,7 @@ func (t *framedTransport) writeMessage(ctx context.Context, timeout time.Duratio
 
 // writeMessageFDs writes one message, attaching files to it in an
 // SCM_RIGHTS ancillary message on transports that support it.
-func (t *framedTransport) writeMessageFDs(ctx context.Context, timeout time.Duration, msg Message, files []*os.File) error {
+func (t *framedTransport) writeMessageFDs(ctx context.Context, timeout time.Duration, msg Message, files Files) error {
 	if len(files) == 0 {
 		stopDeadline, err := setWriteDeadline(t.conn, ctx, timeout)
 		if err != nil {

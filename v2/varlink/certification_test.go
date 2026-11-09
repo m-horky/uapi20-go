@@ -138,6 +138,7 @@ func TestConnClientCertificationScenario(t *testing.T) {
 			return call.Reply(ctx, struct {
 				ClientID string `json:"client_id"`
 			}{ClientID: state.clientID})
+
 		}))
 
 		mustRegister(iface.Unary("Test01", func(ctx context.Context, call UnaryCall) error {
@@ -153,6 +154,7 @@ func TestConnClientCertificationScenario(t *testing.T) {
 			return call.Reply(ctx, struct {
 				Bool bool `json:"bool"`
 			}{Bool: true})
+
 		}))
 
 		mustRegister(iface.Unary("Test02", func(ctx context.Context, call UnaryCall) error {
@@ -171,10 +173,12 @@ func TestConnClientCertificationScenario(t *testing.T) {
 					"wants": json.RawMessage(`true`),
 					"got":   json.RawMessage(`false`),
 				})
+
 			}
 			return call.Reply(ctx, struct {
 				Int int64 `json:"int"`
 			}{Int: 1})
+
 		}))
 
 		mustRegister(iface.Unary("Test03", func(ctx context.Context, call UnaryCall) error {
@@ -194,6 +198,7 @@ func TestConnClientCertificationScenario(t *testing.T) {
 			return call.Reply(ctx, struct {
 				Float float64 `json:"float"`
 			}{Float: 1})
+
 		}))
 
 		mustRegister(iface.Unary("Test04", func(ctx context.Context, call UnaryCall) error {
@@ -213,6 +218,7 @@ func TestConnClientCertificationScenario(t *testing.T) {
 			return call.Reply(ctx, struct {
 				String string `json:"string"`
 			}{String: "ping"})
+
 		}))
 
 		mustRegister(iface.Unary("Test05", func(ctx context.Context, call UnaryCall) error {
@@ -240,6 +246,7 @@ func TestConnClientCertificationScenario(t *testing.T) {
 				Float:  3.141592653589793,
 				String: "a lot of string",
 			})
+
 		}))
 
 		mustRegister(iface.Unary("Test06", func(ctx context.Context, call UnaryCall) error {
@@ -279,6 +286,7 @@ func TestConnClientCertificationScenario(t *testing.T) {
 					String: "next",
 				},
 			})
+
 		}))
 
 		mustRegister(iface.Unary("Test07", func(ctx context.Context, call UnaryCall) error {
@@ -303,6 +311,7 @@ func TestConnClientCertificationScenario(t *testing.T) {
 			return call.Reply(ctx, struct {
 				Map map[string]string `json:"map"`
 			}{Map: map[string]string{"foo": "Foo", "bar": "Bar"}})
+
 		}))
 
 		mustRegister(iface.Unary("Test08", func(ctx context.Context, call UnaryCall) error {
@@ -322,6 +331,7 @@ func TestConnClientCertificationScenario(t *testing.T) {
 			return call.Reply(ctx, struct {
 				Set map[string]struct{} `json:"set"`
 			}{Set: map[string]struct{}{"one": {}, "two": {}, "three": {}}})
+
 		}))
 
 		mustRegister(iface.Unary("Test09", func(ctx context.Context, call UnaryCall) error {
@@ -364,6 +374,7 @@ func TestConnClientCertificationScenario(t *testing.T) {
 					},
 				},
 			})
+
 		}))
 
 		mustRegister(iface.Stream("Test10", func(ctx context.Context, call StreamCall) error {
@@ -390,6 +401,7 @@ func TestConnClientCertificationScenario(t *testing.T) {
 			return call.Close(ctx, struct {
 				String string `json:"string"`
 			}{String: "Reply number 10"})
+
 		}))
 
 		mustRegister(iface.Unary("Test11", func(ctx context.Context, call UnaryCall) error {
@@ -434,6 +446,7 @@ func TestConnClientCertificationScenario(t *testing.T) {
 			return call.Reply(ctx, struct {
 				AllOK bool `json:"all_ok"`
 			}{AllOK: true})
+
 		}))
 	})
 	defer closeClientServer(t, client, done)
@@ -565,6 +578,7 @@ func TestConnClientCertificationScenario(t *testing.T) {
 		ClientID string              `json:"client_id"`
 		MyType   certificationMyType `json:"mytype"`
 	}{ClientID: start.ClientID, MyType: test09.MyType})
+
 	if err != nil {
 		t.Fatalf("Test10 stream error = %v", err)
 	}

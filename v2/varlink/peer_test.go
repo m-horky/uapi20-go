@@ -94,6 +94,7 @@ func TestPeerPIDFDFromUnixConnection(t *testing.T) {
 			return call.Reply(ctx, struct {
 				Pidfd bool `json:"pidfd"`
 			}{})
+
 		}
 		// Signal 0 checks permission to signal the process the pidfd
 		// refers to without sending anything: here, ourselves.

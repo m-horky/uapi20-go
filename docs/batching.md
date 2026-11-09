@@ -26,7 +26,16 @@ Notes:
 
 - Only unary (`Invoke`) and `oneway` calls can be batched; streams and
   upgrades need exclusive use of the connection.
-- File descriptors cannot be passed in batched calls; replies carrying them
-  have their descriptors discarded.
+- Each batched call carries its [file descriptors](file-descriptors.md)
+  per message, like the unbatched API, through the same call options:
+
+  ```go
+  var files varlink.Files
+  batch.Invoke("org.example.editor.OpenDocument", params, &out,
+      varlink.ReceiveFiles(&files))
+  if err := batch.Send(ctx); err == nil {
+      defer files.Close()
+  }
+  ```
 - Oneway calls in a batch produce no reply, so the replies are matched to
   the non-oneway calls in order.

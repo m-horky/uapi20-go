@@ -78,5 +78,13 @@ qualified name:
 		log.Fatal(err)
 	}
 	fmt.Println(out.Greeting)
+
+On AF_UNIX stream sockets, file descriptors can be passed in SCM_RIGHTS
+ancillary messages attached to the messages they belong to; see the
+SendFiles and ReceiveFiles call options, the PushFile and PushFiles call
+methods, and the AcceptFileDescriptors configuration options. Other
+transports degrade gracefully with
+ErrFileDescriptorsUnsupported. The subpackage varlink/httpbridge encapsulates
+services behind the HTTP and WebSocket transports of the UAPI specification.
 */
 package varlink

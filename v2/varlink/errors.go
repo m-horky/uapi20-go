@@ -72,6 +72,10 @@ var (
 	ErrMethodNotDeclared = errors.New("varlink: method not declared by interface")
 	// ErrBatchSent is returned when a batch is reused after Send.
 	ErrBatchSent = errors.New("varlink: batch already sent")
+	// ErrInvalidCallOption is returned when a call option that does not
+	// apply to the operation is passed to it, such as ReceiveFiles on a
+	// call that receives no reply.
+	ErrInvalidCallOption = errors.New("varlink: call option not applicable")
 )
 
 // IsServiceError reports whether err is a remote error with the given

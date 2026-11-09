@@ -65,9 +65,9 @@ registered for methods the interface declares. The built-in
 
 | Registration | Use case                                            | Call API                                        |
 |--------------|-----------------------------------------------------|-------------------------------------------------|
-| `Unary`      | one request, one reply (also serves `oneway` calls) | `UnaryCall`: `Reply`, `ReplyError`, `IsOneway`  |
-| `Stream`     | multiple replies per call (`more`)                  | `StreamCall`: `Send`, `Close`, `ReplyError`     |
-| `Upgrade`    | connection takeover (`upgrade`)                     | `UpgradeCall`: `Accept`, `ReplyError`           |
+| `Unary`      | one request, one reply (also serves `oneway` calls) | `UnaryCall`: `Reply`, `ReplyError`, `IsOneway`, `Files`, `PushFile`, `PushFiles`, `SupportsFileDescriptors` |
+| `Stream`     | multiple replies per call (`more`)                  | `StreamCall`: `Send`, `Close`, `ReplyError`, `Files`, `PushFile`, `PushFiles`, `SupportsFileDescriptors` |
+| `Upgrade`    | connection takeover (`upgrade`)                     | `UpgradeCall`: `Accept`, `ReplyError`, `Files`, `PushFile`, `PushFiles`, `SupportsFileDescriptors` |
 
 See the [streams](streams.md) and [upgrades](upgrade.md) pages.
 

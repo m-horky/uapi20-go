@@ -238,7 +238,7 @@ func registerEcho(b *varlink.ServerBuilder, description string) error {
 	}))
 
 	reg(iface.Unary("CheckFD", func(ctx context.Context, call varlink.UnaryCall) error {
-		fds := call.FileDescriptors()
+		fds := call.Files()
 		for _, fd := range fds {
 			_ = fd.Close()
 		}

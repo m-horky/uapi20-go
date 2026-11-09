@@ -56,8 +56,12 @@ func (s *Server) Serve(ctx context.Context, conn io.ReadWriteCloser) error {
 
 	var serveErr error
 	upgraded := false
-	for received := range reader.msgs {
-		up, err := s.handleMessage(connCtx, transport, received.msg, received.fds, reader)
+	for {
+		received, ok := <-reader.msgs
+		if !ok {
+			break
+		}
+		up, err := s.handleMessage(connCtx, transport, received.msg, received.fds)
 		if err != nil {
 			// Disconnects (including handlers aborted by a client
 			// disconnect) end the connection cleanly; anything else is a
@@ -71,12 +75,20 @@ func (s *Server) Serve(ctx context.Context, conn io.ReadWriteCloser) error {
 			upgraded = true
 			break
 		}
+		// The reader stops after delivering a call that requests an
+		// upgrade, since the bytes following it may belong to the upgraded
+		// protocol. A rejected upgrade restarts it.
+		if received.msg.Upgrade {
+			reader = newConnReader(transport, connCtx, cancel, s.cfg.ReadTimeout)
+			go reader.run()
+		}
 	}
 
 	cancel(nil)
 	if upgraded {
-		// The reader has already been halted by the accepted upgrade, and
-		// the connection now belongs to the upgrade handler.
+		// The reader has already stopped after delivering the accepted
+		// upgrade call, and the connection now belongs to the upgrade
+		// handler.
 		owned = false
 		return nil
 	}
@@ -109,7 +121,7 @@ func (s *Server) Serve(ctx context.Context, conn io.ReadWriteCloser) error {
 // received with it. It reports whether the connection was upgraded, in
 // which case Serve must stop reading and the caller owns the connection
 // from now on.
-func (s *Server) handleMessage(connCtx context.Context, transport *framedTransport, msg Message, files []*os.File, reader *connReader) (upgraded bool, err error) {
+func (s *Server) handleMessage(connCtx context.Context, transport *framedTransport, msg Message, files Files) (upgraded bool, err error) {
 	// Descriptors the handler does not take ownership of are closed when
 	// the call finishes, so that peers cannot exhaust the process
 	// descriptor budget.
@@ -126,17 +138,6 @@ func (s *Server) handleMessage(connCtx context.Context, transport *framedTranspo
 	ifaceName, methodName, err := splitMethod(msg.Method)
 	if err != nil {
 		return false, s.replyServiceError(connCtx, transport, msg, ErrorInvalidParameter, "parameter", "method")
-	}
-
-	// The reader parks after delivering an upgrade call, because the bytes
-	// following it may already belong to the upgraded protocol. Make sure it
-	// is resumed unless the upgrade is confirmed.
-	if msg.Upgrade {
-		defer func() {
-			if !upgraded {
-				reader.resume()
-			}
-		}()
 	}
 
 	// Per-call authorization runs before any dispatch, so that denied
@@ -190,13 +191,12 @@ func (s *Server) handleMessage(connCtx context.Context, transport *framedTranspo
 	callCtx, cancelCall := context.WithCancel(connCtx)
 	defer cancelCall()
 
-	request := baseRequest{
+	call := &serverCall{
 		method:     msg.Method,
 		parameters: msg.Parameters,
 		transport:  transport,
 		cfg:        s.cfg,
 		oneway:     msg.Oneway,
-		reader:     reader,
 		fds:        fds,
 	}
 
@@ -204,7 +204,6 @@ func (s *Server) handleMessage(connCtx context.Context, transport *framedTranspo
 	case hasUnary:
 		// A call with more set to a method that does not support streaming
 		// gets a single reply without continues.
-		call := &unaryRequest{baseRequest: request}
 		err = s.invokeHandler(func() error { return unary(callCtx, call) })
 		if err == nil && !call.oneway && !call.replied {
 			err = call.Reply(callCtx, nil)
@@ -212,7 +211,6 @@ func (s *Server) handleMessage(connCtx context.Context, transport *framedTranspo
 		return false, err
 
 	case hasStream:
-		call := &streamRequest{baseRequest: request}
 		err = s.invokeHandler(func() error { return stream(callCtx, call) })
 		if err == nil && !call.replied && !call.closed {
 			err = call.Close(callCtx, nil)
@@ -220,7 +218,6 @@ func (s *Server) handleMessage(connCtx context.Context, transport *framedTranspo
 		return false, err
 
 	default:
-		call := &upgradeRequest{baseRequest: request}
 		err = s.invokeHandler(func() error { return upgrade(callCtx, call) })
 		if err == nil && !call.replied && !call.upgraded {
 			_, err = call.Accept(callCtx, nil)
@@ -359,29 +356,25 @@ func isDisconnect(err error) bool {
 // connReader reads messages from the connection and delivers them, in
 // order, to the dispatcher. Its lifecycle is tied to the per-connection
 // context: it fails (and cancels the context) when the connection breaks,
-// and it parks after delivering a call that requests a protocol upgrade,
-// since the bytes following such a call may belong to the upgraded protocol
-// and must not be consumed before the upgrade is confirmed.
+// which also aborts any handler in flight. It stops after delivering a call
+// that requests a protocol upgrade, since the bytes following such a call
+// may belong to the upgraded protocol and must not be consumed before the
+// upgrade is confirmed; Serve restarts it if the upgrade is rejected.
 type connReader struct {
 	transport *framedTransport
 	ctx       context.Context
 	cancel    context.CancelCauseFunc
 	timeout   time.Duration
 
-	msgs    chan receivedMessage
-	control chan readerControl
-	done    chan struct{}
+	msgs chan receivedMessage
+	done chan struct{}
 }
 
 // receivedMessage is one decoded call together with the file descriptors
 // received with it.
 type receivedMessage struct {
 	msg Message
-	fds []*os.File
-}
-
-type readerControl struct {
-	halt bool
+	fds Files
 }
 
 func newConnReader(transport *framedTransport, ctx context.Context, cancel context.CancelCauseFunc, timeout time.Duration) *connReader {
@@ -391,7 +384,6 @@ func newConnReader(transport *framedTransport, ctx context.Context, cancel conte
 		cancel:    cancel,
 		timeout:   timeout,
 		msgs:      make(chan receivedMessage, connQueueSize),
-		control:   make(chan readerControl),
 		done:      make(chan struct{}),
 	}
 }
@@ -409,18 +401,12 @@ func (r *connReader) run() {
 		select {
 		case r.msgs <- receivedMessage{msg: msg, fds: files}:
 		case <-r.ctx.Done():
+			closeFiles(files)
 			return
 		}
-		if !msg.Upgrade {
-			continue
-		}
-		// Wait for the dispatcher's decision on the upgrade.
-		select {
-		case c := <-r.control:
-			if c.halt {
-				return
-			}
-		case <-r.ctx.Done():
+		if msg.Upgrade {
+			// The dispatcher decides the fate of the connection; do not
+			// read past the upgrade call.
 			return
 		}
 	}
@@ -435,164 +421,190 @@ func (r *connReader) fail(err error) {
 	r.cancel(err)
 }
 
-// halt stops the reader and waits for it to exit. It is called when an
-// upgrade is confirmed, with the reader parked.
-func (r *connReader) halt() {
-	select {
-	case r.control <- readerControl{halt: true}:
-	case <-r.done:
-	}
-	<-r.done
-}
-
-// resume lets the reader continue after an upgrade call was rejected.
-func (r *connReader) resume() {
-	select {
-	case r.control <- readerControl{halt: false}:
-	case <-r.done:
-	}
-}
-
-type baseRequest struct {
+// serverCall is the server-side API for one request. It implements
+// UnaryCall, StreamCall, and UpgradeCall; which subset a handler may use is
+// determined by how the method was registered.
+//
+// A call is not safe for concurrent use: its methods must be called from
+// the goroutine running the handler, since replies are matched to calls in
+// dispatch order.
+type serverCall struct {
 	method     string
 	parameters *codec.RawValue
 	transport  *framedTransport
 	cfg        ServerConfig
 	oneway     bool
-	replied    bool
-	upgraded   bool
-	reader     *connReader
 	fds        *fdBox
+
+	// pushed holds the descriptors queued by PushFile and its siblings
+	// for the next reply written for this call.
+	pushed Files
+
+	replied  bool
+	closed   bool
+	upgraded bool
 }
 
-func (r *baseRequest) Method() string {
-	return r.method
+var (
+	_ UnaryCall   = (*serverCall)(nil)
+	_ StreamCall  = (*serverCall)(nil)
+	_ UpgradeCall = (*serverCall)(nil)
+)
+
+func (c *serverCall) Method() string {
+	return c.method
 }
 
-func (r *baseRequest) Decode(out any) error {
-	return codec.DecodeParameters(r.parameters, out)
+func (c *serverCall) Decode(out any) error {
+	return codec.DecodeParameters(c.parameters, out)
 }
 
-// FileDescriptors returns the file descriptors received with the call.
-func (r *baseRequest) FileDescriptors() []*os.File {
-	return r.fds.take()
+// Files returns the file descriptors received with the call.
+func (c *serverCall) Files() Files {
+	return c.fds.take()
 }
 
-func (r *baseRequest) ReplyError(ctx context.Context, name string, parameters any) error {
-	if r.replied || r.upgraded {
+// PushFile queues f for the next reply of this call and returns its index.
+func (c *serverCall) PushFile(f *os.File) (int, error) {
+	if f == nil {
+		return -1, ErrInvalidCallOption
+	}
+	if c.transport.fd == nil {
+		return -1, ErrFileDescriptorsUnsupported
+	}
+	if len(c.pushed) >= maxSCMFileDescriptors {
+		return -1, ErrFileDescriptorsUnsupported
+	}
+	c.pushed = append(c.pushed, f)
+	return len(c.pushed) - 1, nil
+}
+
+// PushFiles queues all files for the next reply of this call and returns
+// their indexes.
+func (c *serverCall) PushFiles(files Files) ([]int, error) {
+	indexes := make([]int, 0, len(files))
+	for _, f := range files {
+		i, err := c.PushFile(f)
+		if err != nil {
+			return nil, err
+		}
+		indexes = append(indexes, i)
+	}
+	return indexes, nil
+}
+
+// takePushed returns the descriptors queued for the next reply and empties
+// the queue, so that each queued descriptor is sent at most once.
+func (c *serverCall) takePushed() Files {
+	files := c.pushed
+	c.pushed = nil
+	return files
+}
+
+// SupportsFileDescriptors reports whether the connection can pass file
+// descriptors.
+func (c *serverCall) SupportsFileDescriptors() bool {
+	return c.transport.fd != nil
+}
+
+func (c *serverCall) IsOneway() bool {
+	return c.oneway
+}
+
+// write marshals out and writes it as one reply, sending the queued
+// descriptors with it and marking it as continued when it is an
+// intermediate reply of a streaming call.
+func (c *serverCall) write(ctx context.Context, out any, continues bool) error {
+	params, err := codec.MarshalParameters(out)
+	if err != nil {
+		return err
+	}
+	return c.transport.writeMessageFDs(ctx, c.cfg.WriteTimeout, Message{
+		Parameters: params,
+		Continues:  continues,
+	}, c.takePushed())
+}
+
+// Reply replies with out, sending the queued descriptors with it.
+func (c *serverCall) Reply(ctx context.Context, out any) error {
+	if c.replied || c.upgraded {
 		return ErrProtocolViolation
 	}
-	if r.oneway {
-		r.replied = true
+	if c.oneway {
+		c.replied = true
+		c.pushed = nil
+		return nil
+	}
+	if err := c.write(ctx, out, false); err != nil {
+		return err
+	}
+	c.replied = true
+	return nil
+}
+
+// ReplyError replies with a varlink error, sending the queued descriptors
+// with it. Replies to oneway calls are suppressed.
+func (c *serverCall) ReplyError(ctx context.Context, name string, parameters any) error {
+	if c.replied || c.closed || c.upgraded {
+		return ErrProtocolViolation
+	}
+	if c.oneway {
+		c.replied = true
+		c.pushed = nil
 		return nil
 	}
 	params, err := codec.MarshalParameters(parameters)
 	if err != nil {
 		return err
 	}
-	r.replied = true
-	return r.transport.writeMessage(ctx, r.cfg.WriteTimeout, Message{
+	c.replied = true
+	return c.transport.writeMessageFDs(ctx, c.cfg.WriteTimeout, Message{
 		Error:      name,
 		Parameters: params,
-	})
+	}, c.takePushed())
 }
 
-type unaryRequest struct {
-	baseRequest
-}
-
-func (r *unaryRequest) Reply(ctx context.Context, out any) error {
-	return r.ReplyFDs(ctx, out, nil)
-}
-
-// ReplyFDs replies with out, attaching files to the reply.
-func (r *unaryRequest) ReplyFDs(ctx context.Context, out any, files []*os.File) error {
-	if r.replied || r.upgraded {
+// Send sends one streaming reply, sending the queued descriptors with it.
+func (c *serverCall) Send(ctx context.Context, out any) error {
+	if c.replied || c.closed || c.upgraded {
 		return ErrProtocolViolation
 	}
-	if r.oneway {
-		r.replied = true
-		return nil
-	}
-	params, err := codec.MarshalParameters(out)
-	if err != nil {
-		return err
-	}
-	r.replied = true
-	return r.transport.writeMessageFDs(ctx, r.cfg.WriteTimeout, Message{
-		Parameters: params,
-	}, files)
+	return c.write(ctx, out, true)
 }
 
-func (r *unaryRequest) IsOneway() bool {
-	return r.oneway
-}
-
-type streamRequest struct {
-	baseRequest
-	closed bool
-}
-
-func (r *streamRequest) Send(ctx context.Context, out any) error {
-	return r.SendFDs(ctx, out, nil)
-}
-
-// SendFDs sends one streaming reply, attaching files to it.
-func (r *streamRequest) SendFDs(ctx context.Context, out any, files []*os.File) error {
-	if r.replied || r.closed || r.upgraded {
+// Close sends the final reply, sending the queued descriptors with it.
+func (c *serverCall) Close(ctx context.Context, out any) error {
+	if c.replied || c.closed || c.upgraded {
 		return ErrProtocolViolation
 	}
-	params, err := codec.MarshalParameters(out)
-	if err != nil {
+	if err := c.write(ctx, out, false); err != nil {
 		return err
 	}
-	return r.transport.writeMessageFDs(ctx, r.cfg.WriteTimeout, Message{
-		Parameters: params,
-		Continues:  true,
-	}, files)
+	c.replied = true
+	c.closed = true
+	return nil
 }
 
-func (r *streamRequest) Close(ctx context.Context, out any) error {
-	return r.CloseFDs(ctx, out, nil)
-}
-
-// CloseFDs sends the final reply, attaching files to it.
-func (r *streamRequest) CloseFDs(ctx context.Context, out any, files []*os.File) error {
-	if r.replied || r.closed || r.upgraded {
-		return ErrProtocolViolation
-	}
-	params, err := codec.MarshalParameters(out)
-	if err != nil {
-		return err
-	}
-	r.replied = true
-	r.closed = true
-	return r.transport.writeMessageFDs(ctx, r.cfg.WriteTimeout, Message{
-		Parameters: params,
-	}, files)
-}
-
-type upgradeRequest struct {
-	baseRequest
-}
-
-func (r *upgradeRequest) Accept(ctx context.Context, out any) (io.ReadWriteCloser, error) {
-	if r.replied || r.upgraded {
+// Accept confirms the upgrade, replying with out and sending the queued
+// descriptors with it, and returns the connection, including any bytes
+// already received after the upgrade call, for use by the upgraded
+// protocol.
+func (c *serverCall) Accept(ctx context.Context, out any) (io.ReadWriteCloser, error) {
+	if c.replied || c.upgraded {
 		return nil, ErrProtocolViolation
 	}
 	params, err := codec.MarshalParameters(out)
 	if err != nil {
 		return nil, err
 	}
-	r.replied = true
-	r.upgraded = true
-	if err := r.transport.writeMessage(ctx, r.cfg.WriteTimeout, Message{
+	c.replied = true
+	c.upgraded = true
+	if err := c.transport.writeMessageFDs(ctx, c.cfg.WriteTimeout, Message{
 		Parameters: params,
-	}); err != nil {
+	}, c.takePushed()); err != nil {
 		return nil, err
 	}
-	// Stop the reader before handing over the connection: it must not
-	// consume bytes of the upgraded protocol.
-	r.reader.halt()
-	return r.transport.detach(), nil
+	// The reader has already stopped after delivering the upgrade call, so
+	// it cannot consume bytes of the upgraded protocol.
+	return c.transport.detach(), nil
 }

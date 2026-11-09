@@ -21,4 +21,10 @@ invocation of a non-existent method. The next reply received on the
 connection belongs to the next call issued without `oneway`.
 
 Oneway calls can be combined with [batches](batching.md) and with
-[file descriptor passing](file-descriptors.md) via `OnewayFDs`.
+[file descriptor passing](file-descriptors.md) via the `SendFiles` option
+(`ReceiveFiles` is not applicable, since there is no reply):
+
+```go
+err := client.Oneway(ctx, "org.example.log.Notify", params,
+    varlink.SendFiles(varlink.Files{file}))
+```
