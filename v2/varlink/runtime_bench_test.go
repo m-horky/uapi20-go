@@ -122,7 +122,7 @@ func BenchmarkConnClientBatchInvoke(b *testing.B) {
 		batch.Invoke("org.example.bench.Ping", in, &out1)
 		batch.Invoke("org.example.bench.Ping", in, &out2)
 		if err := batch.Send(context.Background()); err != nil {
-			b.Fatalf("Batch.Send() error = %v", err)
+			b.Fatalf("Batch.Send(ctx) error = %v", err)
 		}
 	}
 }

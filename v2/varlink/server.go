@@ -45,8 +45,8 @@ type ServerConfig struct {
 	// option in that case, so that a client sending descriptors has its
 	// call fail rather than the descriptors being queued; on other
 	// kernels the descriptors are discarded when the connection is read.
-	// Sending file descriptors (see UnaryCall.ReplyFDs and
-	// StreamCall.SendFDs) does not require this option.
+	// Sending file descriptors (see UnaryCall.PushFile and its siblings)
+	// does not require this option.
 	AcceptFileDescriptors bool
 	// MaxConnections bounds the number of connections served
 	// concurrently per listener; connections beyond the limit are closed
@@ -82,49 +82,92 @@ type UpgradeHandler func(ctx context.Context, call UpgradeCall) error
 type UnaryCall interface {
 	Method() string
 	Decode(out any) error
+	// Reply replies with out, sending the descriptors queued with PushFile
+	// and its siblings with it.
 	Reply(ctx context.Context, out any) error
-	// ReplyFDs replies with out, attaching files to the reply in
-	// SCM_RIGHTS ancillary messages. It fails with
-	// ErrFileDescriptorsUnsupported on transports that cannot carry file
-	// descriptors.
-	ReplyFDs(ctx context.Context, out any, files []*os.File) error
+	// ReplyError replies with a varlink error, sending the queued
+	// descriptors with it.
 	ReplyError(ctx context.Context, name string, parameters any) error
 	IsOneway() bool
-	// FileDescriptors returns the file descriptors received with the
-	// call, referenced from its parameters by their index. The first call
-	// transfers ownership: descriptors the handler does not take are
-	// closed when it returns. It returns nil unless the server was
+	// Files returns the file descriptors received with the call,
+	// referenced from its parameters by their index. The first call
+	// transfers ownership and empties the box: later calls return nil,
+	// so the descriptors cannot be taken and closed twice.
+	// Descriptors the handler does not take are closed when it returns.
+	// It returns nil unless the server was
 	// configured with AcceptFileDescriptors.
-	FileDescriptors() []*os.File
+	Files() Files
+	// SupportsFileDescriptors reports whether the connection can pass
+	// file descriptors; see Client.SupportsFileDescriptors.
+	SupportsFileDescriptors() bool
+	// PushFile queues f to be sent with the next reply of this call, in
+	// one SCM_RIGHTS ancillary message, and returns the index the
+	// reply's parameters can use to reference it. PushFile does not take
+	// ownership: f must stay open until the reply is written, and the
+	// library never closes it, not even when the reply is suppressed
+	// because the call is oneway. It fails with
+	// ErrFileDescriptorsUnsupported on transports that cannot carry file
+	// descriptors, and when the per-message limit of 253 descriptors
+	// would be exceeded.
+	PushFile(f *os.File) (int, error)
+	// PushFiles queues all files for the next reply of this call and
+	// returns their indexes, starting at the index PushFile would have
+	// returned next. It has the same semantics and failure modes as
+	// PushFile.
+	PushFiles(files Files) ([]int, error)
 }
 
 // StreamCall is the server-side API for a streaming request.
 type StreamCall interface {
 	Method() string
 	Decode(out any) error
+	// Send sends one streaming reply, sending the descriptors queued with
+	// PushFile and its siblings with it.
 	Send(ctx context.Context, out any) error
-	// SendFDs sends one streaming reply, attaching files to it in
-	// SCM_RIGHTS ancillary messages.
-	SendFDs(ctx context.Context, out any, files []*os.File) error
+	// Close sends the final reply, sending the queued descriptors with
+	// it.
 	Close(ctx context.Context, out any) error
-	// CloseFDs sends the final reply, attaching files to it in SCM_RIGHTS
-	// ancillary messages.
-	CloseFDs(ctx context.Context, out any, files []*os.File) error
+	// ReplyError replies with a varlink error, sending the queued
+	// descriptors with it.
 	ReplyError(ctx context.Context, name string, parameters any) error
-	// FileDescriptors returns the file descriptors received with the
-	// call; see UnaryCall.FileDescriptors for the ownership rules.
-	FileDescriptors() []*os.File
+	// Files returns the file descriptors received with the call; see
+	// UnaryCall.Files for the ownership rules.
+	Files() Files
+	// SupportsFileDescriptors reports whether the connection can pass
+	// file descriptors; see Client.SupportsFileDescriptors.
+	SupportsFileDescriptors() bool
+	// PushFile queues f to be sent with the next reply of this call; see
+	// UnaryCall.PushFile.
+	PushFile(f *os.File) (int, error)
+	// PushFiles queues all files for the next reply of this call; see
+	// UnaryCall.PushFiles.
+	PushFiles(files Files) ([]int, error)
 }
 
 // UpgradeCall is the server-side API for a successful connection upgrade.
 type UpgradeCall interface {
 	Method() string
 	Decode(out any) error
+	// Accept confirms the upgrade, replying with out and sending the
+	// descriptors queued with PushFile and its siblings with it, and
+	// returns the connection, including any bytes already received after
+	// the upgrade call, for use by the upgraded protocol.
 	Accept(ctx context.Context, out any) (io.ReadWriteCloser, error)
+	// ReplyError replies with a varlink error, sending the queued
+	// descriptors with it.
 	ReplyError(ctx context.Context, name string, parameters any) error
-	// FileDescriptors returns the file descriptors received with the
-	// call; see UnaryCall.FileDescriptors for the ownership rules.
-	FileDescriptors() []*os.File
+	// Files returns the file descriptors received with the call; see
+	// UnaryCall.Files for the ownership rules.
+	Files() Files
+	// SupportsFileDescriptors reports whether the connection can pass
+	// file descriptors; see Client.SupportsFileDescriptors.
+	SupportsFileDescriptors() bool
+	// PushFile queues f to be sent with the confirming reply; see
+	// UnaryCall.PushFile.
+	PushFile(f *os.File) (int, error)
+	// PushFiles queues all files for the confirming reply; see
+	// UnaryCall.PushFiles.
+	PushFiles(files Files) ([]int, error)
 }
 
 // ServerBuilder collects interfaces and configuration before the server is

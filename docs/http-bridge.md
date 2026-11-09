@@ -75,3 +75,15 @@ $ printf '{"method":"org.example.ftl.Monitor","more":true}\0' | \
 A deployment exposed to a network should use TLS (`https://`/`wss://`) and
 authenticate clients, e.g. via mutual TLS. Note that the services behind
 the bridge see the bridge's peer credentials, not the remote client's.
+
+## File descriptors
+
+Neither HTTP nor WebSocket connections can carry `SCM_RIGHTS` ancillary
+messages, so the bridge never accepts or forwards file descriptors, in
+either mode: it refuses to start when configured with
+`ClientConfig.AcceptFileDescriptors`, and any descriptors a service would
+attach to a reply are dropped rather than delivered. Parameters that
+reference descriptor indices are still forwarded verbatim, since detecting
+such references requires interface-specific knowledge; interfaces that
+pass file descriptors should document how their methods fail when used
+through the bridge.

@@ -14,10 +14,6 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// maxSCMFileDescriptors matches the kernel limit of descriptors deliverable
-// in a single SCM_RIGHTS control message.
-const maxSCMFileDescriptors = 253
-
 var _ FDConn = (*fdConn)(nil)
 
 // fdConn adapts a stream *net.UnixConn for the varlink runtime while
@@ -42,10 +38,10 @@ type fdConn struct {
 	oob []byte
 
 	mu         sync.Mutex
-	raw        bool       // detached (upgraded protocol) mode
-	midMessage bool       // stream position is inside an unfinished message
-	curFDs     []*os.File // descriptors of the message currently arriving
-	queue      [][]*os.File
+	raw        bool  // detached (upgraded protocol) mode
+	midMessage bool  // stream position is inside an unfinished message
+	curFDs     Files // descriptors of the message currently arriving
+	queue      []Files
 }
 
 // wrapFDConn returns an fdConn for conn if it is an AF_UNIX stream
@@ -117,7 +113,7 @@ func (c *fdConn) recv(p []byte) (int, error) {
 
 // scanChunk updates the message-boundary and descriptor-association state
 // for one chunk of received data.
-func (c *fdConn) scanChunk(data []byte, files []*os.File) {
+func (c *fdConn) scanChunk(data []byte, files Files) {
 	// Linux may coalesce data from several sendmsg(2) calls into one
 	// recvmsg(2), but stops at the segment carrying SCM_RIGHTS. The
 	// descriptors therefore belong to the last message that starts in this
@@ -176,7 +172,7 @@ func (c *fdConn) scanChunk(data []byte, files []*os.File) {
 
 // takeMessageFDs returns the descriptors received with the message most
 // recently read by the consumer, in message order.
-func (c *fdConn) takeMessageFDs() []*os.File {
+func (c *fdConn) takeMessageFDs() Files {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if len(c.queue) == 0 {
@@ -217,7 +213,7 @@ func (c *fdConn) Write(p []byte) (int, error) {
 
 // WriteMsg writes p as one chunk, attaching files in an SCM_RIGHTS
 // ancillary message.
-func (c *fdConn) WriteMsg(p []byte, files []*os.File) error {
+func (c *fdConn) WriteMsg(p []byte, files Files) error {
 	if len(files) == 0 {
 		_, err := c.conn.Write(p)
 		return err
@@ -235,7 +231,7 @@ func (c *fdConn) WriteMsg(p []byte, files []*os.File) error {
 
 // writeFrame writes one NUL-terminated frame with its descriptors attached
 // to the first byte, in a single sendmsg call.
-func (c *fdConn) writeFrame(frame []byte, files []*os.File) error {
+func (c *fdConn) writeFrame(frame []byte, files Files) error {
 	if len(frame) >= math.MaxInt {
 		return ErrFrameTooLarge
 	}
@@ -247,12 +243,12 @@ func (c *fdConn) writeFrame(frame []byte, files []*os.File) error {
 
 // ReadMsg reads up to len(p) bytes and returns the file descriptors
 // received with them.
-func (c *fdConn) ReadMsg(p []byte) (int, []*os.File, error) {
+func (c *fdConn) ReadMsg(p []byte) (int, Files, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	// Surface descriptors still held from the framed phase first, so that
 	// they are not lost when the connection is detached mid-stream.
-	var queued []*os.File
+	var queued Files
 	for _, files := range c.queue {
 		queued = append(queued, files...)
 	}
@@ -276,15 +272,15 @@ func (c *fdConn) ReadMsg(p []byte) (int, []*os.File, error) {
 // messages.
 func (c *fdConn) Close() error {
 	c.mu.Lock()
-	pending := append(append([]*os.File(nil), c.curFDs...), flattenFDs(c.queue)...)
+	pending := append(append(Files(nil), c.curFDs...), flattenFDs(c.queue)...)
 	c.curFDs, c.queue = nil, nil
 	c.mu.Unlock()
 	closeFiles(pending)
 	return c.conn.Close()
 }
 
-func flattenFDs(queue [][]*os.File) []*os.File {
-	var out []*os.File
+func flattenFDs(queue []Files) Files {
+	var out Files
 	for _, files := range queue {
 		out = append(out, files...)
 	}
@@ -293,7 +289,7 @@ func flattenFDs(queue [][]*os.File) []*os.File {
 
 // parseRights extracts the file descriptors of all SCM_RIGHTS control
 // messages in oob, wrapping them in *os.File.
-func parseRights(oob []byte) ([]*os.File, error) {
+func parseRights(oob []byte) (Files, error) {
 	if len(oob) == 0 {
 		return nil, nil
 	}
@@ -301,7 +297,7 @@ func parseRights(oob []byte) ([]*os.File, error) {
 	if err != nil {
 		return nil, err
 	}
-	var files []*os.File
+	var files Files
 	for _, m := range msgs {
 		if m.Header.Type != unix.SCM_RIGHTS {
 			continue

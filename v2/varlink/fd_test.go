@@ -60,7 +60,7 @@ func TestFileDescriptorRoundTrip(t *testing.T) {
 	addr := newUnixTestServer(t, ServerConfig{AcceptFileDescriptors: true}, func(b *ServerBuilder) {
 		iface := mustInterface(t, b, fdTestInterface)
 		if err := iface.Unary("Echo", func(ctx context.Context, call UnaryCall) error {
-			fds := call.FileDescriptors()
+			fds := call.Files()
 			if len(fds) != 1 {
 				return call.ReplyError(ctx, ErrorInvalidParameter, map[string]any{"parameter": "fds"})
 			}
@@ -79,9 +79,12 @@ func TestFileDescriptorRoundTrip(t *testing.T) {
 				return err
 			}
 			defer w.Close()
-			return call.ReplyFDs(ctx, struct {
+			if _, err := call.PushFiles(Files{r}); err != nil {
+				return err
+			}
+			return call.Reply(ctx, struct {
 				Length int `json:"length"`
-			}{Length: 4}, []*os.File{r})
+			}{Length: 4})
 		}); err != nil {
 			t.Fatalf("Unary() error = %v", err)
 		}
@@ -99,11 +102,12 @@ func TestFileDescriptorRoundTrip(t *testing.T) {
 	var out struct {
 		Length int `json:"length"`
 	}
-	files, err := client.InvokeFDs(context.Background(), "org.example.fds.Echo", struct {
+	var files Files
+	err = client.Invoke(context.Background(), "org.example.fds.Echo", struct {
 		Data string `json:"data"`
-	}{Data: "x"}, &out, []*os.File{w})
+	}{Data: "x"}, &out, SendFiles(Files{w}), ReceiveFiles(&files))
 	if err != nil {
-		t.Fatalf("InvokeFDs() error = %v", err)
+		t.Fatalf("Invoke() error = %v", err)
 	}
 	_ = w.Close()
 	if out.Length != 4 {
@@ -143,7 +147,7 @@ func TestFileDescriptorsNotAcceptedByDefault(t *testing.T) {
 	addr := newUnixTestServer(t, ServerConfig{}, func(b *ServerBuilder) {
 		iface := mustInterface(t, b, fdTestInterface)
 		if err := iface.Unary("Echo", func(ctx context.Context, call UnaryCall) error {
-			seen <- len(call.FileDescriptors())
+			seen <- len(call.Files())
 			return call.Reply(ctx, struct {
 				Length int `json:"length"`
 			}{Length: 0})
@@ -161,9 +165,9 @@ func TestFileDescriptorsNotAcceptedByDefault(t *testing.T) {
 	var out struct {
 		Length int `json:"length"`
 	}
-	_, err = client.InvokeFDs(context.Background(), "org.example.fds.Echo", struct {
+	err = client.Invoke(context.Background(), "org.example.fds.Echo", struct {
 		Data string `json:"data"`
-	}{Data: "x"}, &out, []*os.File{w})
+	}{Data: "x"}, &out, SendFiles(Files{w}))
 	_ = w.Close()
 	if err == nil {
 		select {
@@ -212,8 +216,8 @@ func TestFileDescriptorsUnsupportedTransport(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer r.Close()
-	if _, err := client.InvokeFDs(context.Background(), "org.example.test.Ping", nil, nil, []*os.File{w}); !errors.Is(err, ErrFileDescriptorsUnsupported) {
-		t.Fatalf("InvokeFDs() error = %v, want ErrFileDescriptorsUnsupported", err)
+	if err := client.Invoke(context.Background(), "org.example.test.Ping", nil, nil, SendFiles(Files{w})); !errors.Is(err, ErrFileDescriptorsUnsupported) {
+		t.Fatalf("Invoke() error = %v, want ErrFileDescriptorsUnsupported", err)
 	}
 }
 
@@ -226,7 +230,7 @@ func TestOnewayFileDescriptors(t *testing.T) {
 			if !call.IsOneway() {
 				t.Error("IsOneway() = false")
 			}
-			fds := call.FileDescriptors()
+			fds := call.Files()
 			if len(fds) != 1 {
 				return call.ReplyError(ctx, ErrorInvalidParameter, map[string]any{"parameter": "fds"})
 			}
@@ -251,10 +255,10 @@ func TestOnewayFileDescriptors(t *testing.T) {
 		_, _ = w.Write([]byte("noise"))
 		_ = w.Close()
 	}()
-	if err := client.OnewayFDs(context.Background(), "org.example.fds.Notify", struct {
+	if err := client.Oneway(context.Background(), "org.example.fds.Notify", struct {
 		Data string `json:"data"`
-	}{Data: "x"}, []*os.File{r}); err != nil {
-		t.Fatalf("OnewayFDs() error = %v", err)
+	}{Data: "x"}, SendFiles(Files{r})); err != nil {
+		t.Fatalf("Oneway() error = %v", err)
 	}
 
 	// Unblock the service's read; it wrote the payload above.
@@ -317,9 +321,12 @@ func TestStreamFileDescriptors(t *testing.T) {
 				return err
 			}
 			_ = w.Close()
-			if err := call.SendFDs(ctx, struct {
+			if _, err := call.PushFiles(Files{r}); err != nil {
+				return err
+			}
+			if err := call.Send(ctx, struct {
 				Index int `json:"index"`
-			}{Index: 1}, []*os.File{r}); err != nil {
+			}{Index: 1}); err != nil {
 				return err
 			}
 			r2, w2, err := os.Pipe()
@@ -330,9 +337,12 @@ func TestStreamFileDescriptors(t *testing.T) {
 				return err
 			}
 			_ = w2.Close()
-			return call.CloseFDs(ctx, struct {
+			if _, err := call.PushFiles(Files{r2}); err != nil {
+				return err
+			}
+			return call.Close(ctx, struct {
 				Index int `json:"index"`
-			}{Index: 2}, []*os.File{r2})
+			}{Index: 2})
 		}); err != nil {
 			t.Fatalf("Stream() error = %v", err)
 		}
@@ -354,9 +364,10 @@ func TestStreamFileDescriptors(t *testing.T) {
 		t.Fatalf("first reply index = %d, want 0", out.Index)
 	}
 
-	files, err := stream.RecvFDs(context.Background(), &out)
+	var files Files
+	err = stream.Recv(context.Background(), &out, ReceiveFiles(&files))
 	if err != nil {
-		t.Fatalf("RecvFDs() error = %v", err)
+		t.Fatalf("Recv() error = %v", err)
 	}
 	if out.Index != 1 {
 		t.Fatalf("second reply index = %d, want 1", out.Index)
@@ -372,9 +383,10 @@ func TestStreamFileDescriptors(t *testing.T) {
 		t.Fatalf("second reply descriptor = %q, want %q", payload, "payload-1")
 	}
 
-	files, err = stream.RecvFDs(context.Background(), &out)
+	files = nil
+	err = stream.Recv(context.Background(), &out, ReceiveFiles(&files))
 	if err != nil {
-		t.Fatalf("RecvFDs() error = %v", err)
+		t.Fatalf("Recv() error = %v", err)
 	}
 	if out.Index != 2 {
 		t.Fatalf("final reply index = %d, want 2", out.Index)
@@ -393,6 +405,49 @@ func TestStreamFileDescriptors(t *testing.T) {
 	if err := stream.Recv(context.Background(), &out); !errors.Is(err, io.EOF) {
 		t.Fatalf("Recv() after end = %v, want io.EOF", err)
 	}
+}
+
+// TestFileDescriptorsSecondTakeReturnsNil verifies the ownership transfer
+// of the call's descriptors: given a handler that calls Files() twice, when
+// the second call returns, then it gets nil instead of the same descriptors
+// again, so they cannot be closed twice.
+func TestFileDescriptorsSecondTakeReturnsNil(t *testing.T) {
+	addr := newUnixTestServer(t, ServerConfig{AcceptFileDescriptors: true}, func(b *ServerBuilder) {
+		iface := mustInterface(t, b, fdTestInterface)
+		if err := iface.Unary("Echo", func(ctx context.Context, call UnaryCall) error {
+			first := call.Files()
+			if len(first) != 1 {
+				t.Errorf("first Files() = %d files, want 1", len(first))
+			}
+			if second := call.Files(); second != nil {
+				t.Errorf("second Files() = %v, want nil", second)
+				second.Close()
+			}
+			first.Close()
+			return call.Reply(ctx, struct {
+				Length int `json:"length"`
+			}{Length: 0})
+		}); err != nil {
+			t.Fatalf("Unary() error = %v", err)
+		}
+	})
+
+	client := newFDTestClient(t, addr, true)
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out struct {
+		Length int `json:"length"`
+	}
+	if err := client.Invoke(context.Background(), "org.example.fds.Echo", struct {
+		Data string `json:"data"`
+	}{Data: "x"}, &out, SendFiles(Files{w})); err != nil {
+		t.Fatalf("Invoke() error = %v", err)
+	}
+	_ = w.Close()
+	_ = r.Close()
+	_ = client.Close()
 }
 
 // TestFileDescriptorsClosedWhenNotTaken verifies that descriptors a handler
@@ -419,10 +474,10 @@ func TestFileDescriptorsClosedWhenNotTaken(t *testing.T) {
 	var out struct {
 		Length int `json:"length"`
 	}
-	if _, err := client.InvokeFDs(context.Background(), "org.example.fds.Echo", struct {
+	if err := client.Invoke(context.Background(), "org.example.fds.Echo", struct {
 		Data string `json:"data"`
-	}{Data: "x"}, &out, []*os.File{w}); err != nil {
-		t.Fatalf("InvokeFDs() error = %v", err)
+	}{Data: "x"}, &out, SendFiles(Files{w})); err != nil {
+		t.Fatalf("Invoke() error = %v", err)
 	}
 	_ = w.Close()
 	_ = r.Close()
@@ -522,7 +577,7 @@ func TestFileDescriptorCountMismatch(t *testing.T) {
 	addr := newUnixTestServer(t, ServerConfig{AcceptFileDescriptors: true}, func(b *ServerBuilder) {
 		iface := mustInterface(t, b, fdTestInterface)
 		if err := iface.Unary("Echo", func(ctx context.Context, call UnaryCall) error {
-			if len(call.FileDescriptors()) != 2 {
+			if len(call.Files()) != 2 {
 				return call.ReplyError(ctx, ErrorInvalidParameter, map[string]any{"parameter": "fds"})
 			}
 			return call.Reply(ctx, nil)
@@ -540,16 +595,312 @@ func TestFileDescriptorCountMismatch(t *testing.T) {
 	var out struct {
 		Length int `json:"length"`
 	}
-	_, err = client.InvokeFDs(context.Background(), "org.example.fds.Echo", struct {
+	err = client.Invoke(context.Background(), "org.example.fds.Echo", struct {
 		Data string `json:"data"`
-	}{Data: "x"}, &out, []*os.File{w})
+	}{Data: "x"}, &out, SendFiles(Files{w}))
 	_ = w.Close()
 	if !IsServiceError(err, ErrorInvalidParameter) {
-		t.Fatalf("InvokeFDs() error = %v, want InvalidParameter", err)
+		t.Fatalf("Invoke() error = %v, want InvalidParameter", err)
 	}
 
 	// The connection survives the rejected call.
 	if err := client.Invoke(context.Background(), "org.varlink.service.GetInfo", nil, nil); err != nil {
 		t.Fatalf("GetInfo() after mismatch error = %v", err)
 	}
+}
+
+// TestUpgradeFileDescriptors verifies that the upgrade call itself can
+// carry file descriptors in both directions.
+//
+// Given a connection that supports file descriptor passing, when the
+// client upgrades while sending a descriptor and the service accepts while
+// replying with one, then each side receives the other's descriptor and
+// the upgraded connection remains usable.
+func TestUpgradeFileDescriptors(t *testing.T) {
+	addr := newUnixTestServer(t, ServerConfig{AcceptFileDescriptors: true}, func(b *ServerBuilder) {
+		iface := mustInterface(t, b, fdTestInterface)
+		if err := iface.Upgrade("TakeOver", func(ctx context.Context, call UpgradeCall) error {
+			if !call.SupportsFileDescriptors() {
+				t.Error("SupportsFileDescriptors() = false for AF_UNIX call")
+			}
+			fds := call.Files()
+			if len(fds) != 1 {
+				return call.ReplyError(ctx, ErrorInvalidParameter, map[string]any{"parameter": "fds"})
+			}
+			// Write through the descriptor the client passed with the
+			// upgrade call.
+			if _, err := fds[0].Write([]byte("takeover")); err != nil {
+				return err
+			}
+			// Reply to the upgrade with a descriptor of our own.
+			r, w, err := os.Pipe()
+			if err != nil {
+				return err
+			}
+			if _, err := w.Write([]byte("confirmed")); err != nil {
+				return err
+			}
+			defer w.Close()
+			if _, err := call.PushFiles(Files{r}); err != nil {
+				return err
+			}
+			conn, err := call.Accept(ctx, nil)
+			if err != nil {
+				return err
+			}
+			go func() { _ = conn.Close() }()
+			return nil
+		}); err != nil {
+			t.Fatalf("Upgrade() error = %v", err)
+		}
+	})
+
+	client := newFDTestClient(t, addr, true)
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	var files Files
+	conn, err := client.Upgrade(context.Background(), "org.example.fds.TakeOver", nil, nil, SendFiles(Files{w}), ReceiveFiles(&files))
+	if err != nil {
+		t.Fatalf("Upgrade() error = %v", err)
+	}
+	_ = w.Close()
+	defer conn.Close()
+
+	// The client's pipe must carry the service's write.
+	buf := make([]byte, 8)
+	if _, err := io.ReadFull(r, buf); err != nil {
+		t.Fatalf("reading client pipe: %v", err)
+	}
+	if string(buf) != "takeover" {
+		t.Fatalf("client pipe = %q, want %q", buf, "takeover")
+	}
+
+	// The files returned by Upgrade must carry the service's write.
+	if len(files) != 1 {
+		t.Fatalf("Upgrade() returned %d file descriptors, want 1", len(files))
+	}
+	payload, err := io.ReadAll(files[0])
+	if err != nil {
+		t.Fatalf("reading returned descriptor: %v", err)
+	}
+	if string(payload) != "confirmed" {
+		t.Fatalf("returned descriptor = %q, want %q", payload, "confirmed")
+	}
+	_ = files[0].Close()
+}
+
+// TestReplyErrorFileDescriptors verifies that descriptors attached to an
+// error reply are closed by the library instead of being delivered.
+//
+// Given a service that replies with an error carrying a descriptor, when
+// the client invokes the method, then the error is delivered and the
+// descriptor is closed, so ReceiveFiles stores nothing.
+func TestReplyErrorFileDescriptors(t *testing.T) {
+	addr := newUnixTestServer(t, ServerConfig{}, func(b *ServerBuilder) {
+		iface := mustInterface(t, b, fdTestInterface)
+		if err := iface.Unary("Echo", func(ctx context.Context, call UnaryCall) error {
+			r, w, err := os.Pipe()
+			if err != nil {
+				return err
+			}
+			if _, err := w.Write([]byte("error-fd")); err != nil {
+				return err
+			}
+			defer w.Close()
+			if _, err := call.PushFiles(Files{r}); err != nil {
+				return err
+			}
+			return call.ReplyError(ctx, "org.example.fds.EchoFailed", nil)
+		}); err != nil {
+			t.Fatalf("Unary() error = %v", err)
+		}
+	})
+
+	client := newFDTestClient(t, addr, true)
+	var files Files
+	err := client.Invoke(context.Background(), "org.example.fds.Echo", struct {
+		Data string `json:"data"`
+	}{Data: "x"}, nil, ReceiveFiles(&files))
+
+	if !IsServiceError(err, "org.example.fds.EchoFailed") {
+		t.Fatalf("Invoke() error = %v, want org.example.fds.EchoFailed", err)
+	}
+	if files != nil {
+		t.Fatalf("ReceiveFiles stored %d file descriptors with the error, want none", len(files))
+	}
+}
+
+// TestBatchFileDescriptors verifies that batched calls carry file
+// descriptors per message, in both directions.
+//
+// Given a batch of unary calls, when one call sends a descriptor and its
+// reply carries one, then the descriptor reaches the service and the
+// reply's descriptor is stored by the call's ReceiveFiles option.
+func TestBatchFileDescriptors(t *testing.T) {
+	addr := newUnixTestServer(t, ServerConfig{AcceptFileDescriptors: true}, func(b *ServerBuilder) {
+		iface := mustInterface(t, b, fdTestInterface)
+		if err := iface.Unary("Echo", func(ctx context.Context, call UnaryCall) error {
+			fds := call.Files()
+			if len(fds) != 1 {
+				return call.ReplyError(ctx, ErrorInvalidParameter, map[string]any{"parameter": "fds"})
+			}
+			if _, err := fds[0].Write([]byte("batched")); err != nil {
+				return err
+			}
+			r, w, err := os.Pipe()
+			if err != nil {
+				return err
+			}
+			if _, err := w.Write([]byte("reply-fd")); err != nil {
+				return err
+			}
+			defer w.Close()
+			if _, err := call.PushFiles(Files{r}); err != nil {
+				return err
+			}
+			return call.Reply(ctx, struct {
+				Length int `json:"length"`
+			}{Length: 7})
+		}); err != nil {
+			t.Fatalf("Unary() error = %v", err)
+		}
+	})
+
+	client := newFDTestClient(t, addr, true)
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	batch := client.Batch()
+	var files Files
+	batch.Invoke("org.example.fds.Echo", struct {
+		Data string `json:"data"`
+	}{Data: "x"}, nil, SendFiles(Files{w}), ReceiveFiles(&files))
+	if err := batch.Send(context.Background()); err != nil {
+		t.Fatalf("Send() error = %v", err)
+	}
+	_ = w.Close()
+
+	// The client's pipe must carry the service's write.
+	buf := make([]byte, 7)
+	if _, err := io.ReadFull(r, buf); err != nil {
+		t.Fatalf("reading client pipe: %v", err)
+	}
+	if string(buf) != "batched" {
+		t.Fatalf("client pipe = %q, want %q", buf, "batched")
+	}
+
+	// The reply's descriptor must be stored by the ReceiveFiles option.
+	if len(files) != 1 {
+		t.Fatalf("reply carried %d file descriptors, want 1", len(files))
+	}
+	payload, err := io.ReadAll(files[0])
+	if err != nil {
+		t.Fatalf("reading reply descriptor: %v", err)
+	}
+	if string(payload) != "reply-fd" {
+		t.Fatalf("reply descriptor = %q, want %q", payload, "reply-fd")
+	}
+	_ = files[0].Close()
+}
+
+// TestServerSupportsFileDescriptors verifies the server-side capability
+// query.
+//
+// Given services on AF_UNIX and TCP transports, when handlers query
+// SupportsFileDescriptors, then it reports true only on the AF_UNIX
+// connection.
+func TestServerSupportsFileDescriptors(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	unixAddr := newUnixTestServer(t, ServerConfig{}, func(b *ServerBuilder) {
+		iface := mustInterface(t, b, fdTestInterface)
+		if err := iface.Unary("Echo", func(ctx context.Context, call UnaryCall) error {
+			if !call.SupportsFileDescriptors() {
+				t.Error("SupportsFileDescriptors() = false for AF_UNIX call")
+			}
+			return call.Reply(ctx, nil)
+		}); err != nil {
+			t.Fatalf("Unary() error = %v", err)
+		}
+	})
+
+	builder := NewServerBuilder(ServerConfig{})
+	tcpIface := mustInterface(t, builder, fdTestInterface)
+	if err := tcpIface.Unary("Echo", func(ctx context.Context, call UnaryCall) error {
+		if call.SupportsFileDescriptors() {
+			t.Error("SupportsFileDescriptors() = true for TCP call")
+		}
+		return call.Reply(ctx, nil)
+	}); err != nil {
+		t.Fatalf("Unary() error = %v", err)
+	}
+	server := builder.Build()
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() { _ = server.Serve(context.Background(), conn) }()
+		}
+	}()
+
+	for _, addr := range []string{unixAddr, "tcp:" + ln.Addr().String()} {
+		client, err := DialWithConfig(context.Background(), addr, ClientConfig{})
+		if err != nil {
+			t.Fatalf("DialWithConfig(%s) error = %v", addr, err)
+		}
+		if err := client.Invoke(context.Background(), "org.example.fds.Echo", struct {
+			Data string `json:"data"`
+		}{Data: "x"}, nil); err != nil {
+			t.Fatalf("Invoke(%s) error = %v", addr, err)
+		}
+		_ = client.Close()
+	}
+}
+
+// TestCallOptionNotApplicable verifies that options are rejected on the
+// operations they cannot apply to.
+//
+// Given a client connected to a streaming service, when ReceiveFiles is
+// passed to Oneway or the opening Stream call, or SendFiles to
+// Stream.Recv, then the call fails with ErrInvalidCallOption.
+func TestCallOptionNotApplicable(t *testing.T) {
+	addr := newUnixTestServer(t, ServerConfig{}, func(b *ServerBuilder) {
+		iface := mustInterface(t, b, fdTestInterface)
+		if err := iface.Stream("Watch", func(ctx context.Context, call StreamCall) error {
+			<-ctx.Done()
+			return nil
+		}); err != nil {
+			t.Fatalf("Stream() error = %v", err)
+		}
+	})
+
+	client := newFDTestClient(t, addr, false)
+	defer client.Close()
+
+	var files Files
+	if err := client.Oneway(context.Background(), "org.example.fds.Notify", nil, ReceiveFiles(&files)); !errors.Is(err, ErrInvalidCallOption) {
+		t.Fatalf("Oneway(ReceiveFiles) error = %v, want %v", err, ErrInvalidCallOption)
+	}
+	if _, err := client.Stream(context.Background(), "org.example.fds.Watch", nil, ReceiveFiles(&files)); !errors.Is(err, ErrInvalidCallOption) {
+		t.Fatalf("Stream(ReceiveFiles) error = %v, want %v", err, ErrInvalidCallOption)
+	}
+	stream, err := client.Stream(context.Background(), "org.example.fds.Watch", nil)
+	if err != nil {
+		t.Fatalf("Stream() error = %v", err)
+	}
+	if err := stream.Recv(context.Background(), nil, SendFiles(Files{})); !errors.Is(err, ErrInvalidCallOption) {
+		t.Fatalf("Recv(SendFiles) error = %v, want %v", err, ErrInvalidCallOption)
+	}
+	_ = stream.Close()
 }

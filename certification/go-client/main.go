@@ -375,13 +375,13 @@ func runEchoBattery(ctx context.Context, client *varlink.ConnClient) {
 		var fdReply struct {
 			Received bool `json:"received"`
 		}
+		var fds varlink.Files
 		payload := mustTempFile("fd-payload")
-		fds, ferr := client.InvokeFDs(ctx, "com.example.echo.CheckFD", nil, &fdReply, []*os.File{
-			payload,
-		})
+		ferr := client.Invoke(ctx, "com.example.echo.CheckFD", nil, &fdReply,
+			varlink.SendFiles(varlink.Files{payload}), varlink.ReceiveFiles(&fds))
 		_ = payload.Close()
 		_ = os.Remove(payload.Name())
-		closeFiles(fds)
+		fds.Close()
 		record("24 fd-passing (Go-only)", "%s", result(ferr, func() string {
 			return fmt.Sprintf("server received fds: %v (fds returned by server: %d)", fdReply.Received, len(fds))
 		}))
@@ -430,12 +430,6 @@ func mustTempFile(content string) *os.File {
 		fatal(err)
 	}
 	return f
-}
-
-func closeFiles(files []*os.File) {
-	for _, f := range files {
-		_ = f.Close()
-	}
 }
 
 func firstLine(s string) string {
